@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>TikZ 生成器测试</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+        }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #58a6ff; margin-bottom: 20px; }
+        h2 { color: #7ee787; margin: 20px 0 10px; font-size: 16px; }
+        
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+        
+        textarea {
+            width: 100%;
+            height: 300px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 10px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        
+        button {
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            margin: 5px 5px 5px 0;
+            font-size: 14px;
+        }
+        button:hover { background: #2ea043; }
+        button.secondary { background: #1f6feb; }
+        
+        .output {
+            background: #161b22;
+            border: 1px solid #30363d;
+            padding: 15px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 500px;
+            overflow: auto;
+        }
+        
+        .info-box {
+            background: #21262d;
+            border-left: 3px solid #58a6ff;
+            padding: 12px;
+            margin: 10px 0;
+            font-size: 13px;
+        }
+        .warning-box {
+            background: #21262d;
+            border-left: 3px solid #f85149;
+            padding: 12px;
+            margin: 10px 0;
+            font-size: 13px;
+        }
+        
+        .tab-buttons { display: flex; gap: 5px; margin-bottom: 10px; }
+        .tab-btn { background: #30363d; }
+        .tab-btn.active { background: #238636; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        
+        .options {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .option { display: flex; align-items: center; gap: 5px; }
+        .option input[type="checkbox"] { transform: scale(1.2); }
+        .option input[type="number"] { width: 60px; }
+        .option label { font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎨 TikZ 生成器测试</h1>
+        
+        <div class="info-box">
+            <strong>两种生成模式：</strong><br>
+            1. <strong>本地模板生成</strong> - 纯 JS 生成，速度快，适合标准图形<br>
+            2. <strong>AI 增强模式</strong> - 用 AI 优化代码质量，支持更复杂的图形和美化
+        </div>
+        
+        <div class="grid">
+            <div>
+                <h2>输入 GGB XML</h2>
+                <textarea id="xmlInput" placeholder="粘贴 GGB XML..."></textarea>
+                <button onclick="generateLocal()">生成本地 TikZ</button>
+                <button class="secondary" onclick="generateAI()">AI 优化生成</button>
+                <button onclick="loadSample()">加载示例</button>
+                
+                <h2>生成选项</h2>
+                <div class="options">
+                    <div class="option">
+                        <input type="checkbox" id="optAxis" checked>
+                        <label for="optAxis">坐标轴</label>
+                    </div>
+                    <div class="option">
+                        <input type="checkbox" id="optGrid" checked>
+                        <label for="optGrid">网格</label>
+                    </div>
+                    <div class="option">
+                        <label>X范围:</label>
+                        <input type="number" id="optXmin" value="-10" step="1">
+                        <input type="number" id="optXmax" value="10" step="1">
+                    </div>
+                    <div class="option">
+                        <label>Y范围:</label>
+                        <input type="number" id="optYmin" value="-10" step="1">
+                        <input type="number" id="optYmax" value="10" step="1">
+                    </div>
+                </div>
+            </div>
+            
+            <div>
+                <h2>输出 TikZ 代码</h2>
+                <div class="tab-buttons">
+                    <button class="tab-btn active" onclick="showTab('local')">本地生成</button>
+                    <button class="tab-btn" onclick="showTab('ai')">AI 生成</button>
+                </div>
+                <div id="tab-local" class="tab-content active">
+                    <textarea id="localOutput" readonly placeholder="本地生成的 TikZ 代码..."></textarea>
+                </div>
+                <div id="tab-ai" class="tab-content">
+                    <textarea id="aiOutput" readonly placeholder="AI 优化的 TikZ 代码..."></textarea>
+                </div>
+            </div>
+        </div>
+        
+        <h2>使用方法</h2>
+        <div class="info-box">
+            <strong>本地模板生成适合：</strong>
+            <ul style="margin-left: 20px; margin-top: 5px;">
+                <li>标准函数（f(x) = x², sin(x), 1/x 等）</li>
+                <li>已知焦点和参数的圆锥曲线</li>
+                <li>简单点、线段、直线</li>
+                <li>需要离线使用或快速预览</li>
+            </ul>
+        </div>
+        <div class="warning-box">
+            <strong>需要 AI 增强的情况：</strong>
+            <ul style="margin-left: 20px; margin-top: 5px;">
+                <li>复杂几何关系（如多圆相切、复杂交点）</li>
+                <li>需要美观的标注和样式</li>
+                <li>非标准坐标系或变换</li>
+                <li>动画或多帧图形</li>
+            </ul>
+        </div>
+    </div>
+
+    <script src="ggb-parser.js"></script>
+    <script src="tikz-generator.js"></script>
+    <script>
+        const sampleXML = `<?xml version="1.0" encoding="utf-8"?>
+<geogebra format="5.0">
+<construction>
+<command name="Ellipse">
+	<input a0="(3, 0)" a1="(-3, 0)" a2="10"/>
+	<output a0="E"/>
+</command>
+<element type="conic" label="E">
+	<show object="true" label="false"/>
+	<objColor r="110" g="109" b="115"/>
+	<lineStyle thickness="5"/>
+</element>
+<command name="Parabola">
+	<input a0="(2, 0)" a1="x = -2"/>
+	<output a0="P"/>
+</command>
+<element type="conic" label="P">
+	<show object="true" label="false"/>
+	<objColor r="0" g="103" b="88"/>
+	<lineStyle thickness="5"/>
+</element>
+<expression label="f" exp="f(x) = x^2" type="function"/>
+<element type="function" label="f">
+	<show object="true" label="false"/>
+	<objColor r="21" g="101" b="192"/>
+</element>
+<element type="point" label="A">
+	<show object="true" label="true"/>
+	<objColor r="211" g="47" b="47"/>
+	<coords x="-6.75" y="3.07" z="1"/>
+</element>
+<element type="point" label="B">
+	<show object="true" label="true"/>
+	<objColor r="211" g="47" b="47"/>
+	<coords x="-2" y="-2" z="1"/>
+</element>
+<command name="Segment">
+	<input a0="A" a1="B"/>
+	<output a0="s"/>
+</command>
+<element type="segment" label="s">
+	<show object="true" label="false"/>
+	<objColor r="199" g="80" b="0"/>
+	<lineStyle thickness="3"/>
+</element>
+</construction>
+</geogebra>`;
+
+        function loadSample() {
+            document.getElementById('xmlInput').value = sampleXML;
+        }
+
+        function getOptions() {
+            return {
+                strictStatic: true,
+                semanticFirst: false,
+                useSourceStyle: false,
+                defaultStrokeColor: 'black',
+                defaultStrokeThickness: 'thick',
+                defaultPointColor: 'black',
+                lineExtensionStart: 0.25,
+                lineExtensionEnd: 0.25,
+                axis: document.getElementById('optAxis').checked,
+                grid: document.getElementById('optGrid').checked,
+                xmin: parseFloat(document.getElementById('optXmin').value),
+                xmax: parseFloat(document.getElementById('optXmax').value),
+                ymin: parseFloat(document.getElementById('optYmin').value),
+                ymax: parseFloat(document.getElementById('optYmax').value)
+            };
+        }
+
+        function generateLocal() {
+            const xml = document.getElementById('xmlInput').value.trim();
+            if (!xml) {
+                alert('请输入 XML');
+                return;
+            }
+            
+            try {
+                // 解析
+                const parser = new GGBParser(xml);
+                const data = parser.parse();
+                
+                // 生成 TikZ
+                const generator = new TikZGenerator(getOptions());
+                const tikz = generator.generate(data);
+                
+                document.getElementById('localOutput').value = tikz;
+                showTab('local');
+                
+            } catch (err) {
+                document.getElementById('localOutput').value = '错误: ' + err.message + '\n' + err.stack;
+            }
+        }
+
+        function generateAI() {
+            const xml = document.getElementById('xmlInput').value.trim();
+            if (!xml) {
+                alert('请输入 XML');
+                return;
+            }
+            
+            // 解析获取结构化数据
+            const parser = new GGBParser(xml);
+            const data = parser.parse();
+            
+            // 生成 AI Prompt
+            const prompt = generateAIPrompt(data);
+            
+            document.getElementById('aiOutput').value = 
+`== AI Prompt 已生成 ==
+请复制以下内容发送给 AI（如 GPT/Claude）来生成优化后的 TikZ 代码：
+
+${prompt}
+
+== 或者使用以下结构化数据 ==
+\`\`\`json
+${JSON.stringify(data.structured, null, 2)}
+\`\`\``;
+            showTab('ai');
+        }
+
+        function generateAIPrompt(data) {
+            const s = data.structured;
+            
+            let prompt = `请将以下 GeoGebra 图形转换为高质量的 LaTeX/TikZ 代码。
+
+## 图形元素统计
+- 点: ${s.points?.length || 0} 个
+- 函数: ${s.functions?.length || 0} 个
+- 线段: ${s.segments?.length || 0} 个
+- 直线: ${s.lines?.length || 0} 个
+- 圆锥曲线: ${s.conics?.length || 0} 个
+
+## 详细数据\n`;
+
+            // 函数
+            if (s.functions?.length > 0) {
+                prompt += '\n### 函数\n';
+                s.functions.forEach(f => {
+                    prompt += `- ${f.label}: ${f.exp}, 颜色 ${f.color || '默认'}\n`;
+                });
+            }
+            
+            // 圆锥曲线
+            if (s.conics?.length > 0) {
+                prompt += '\n### 圆锥曲线\n';
+                s.conics.forEach(c => {
+                    prompt += `- ${c.label} (${c.conicType}): `;
+                    if (c.focus1Coord) prompt += `焦点1(${c.focus1Coord.x},${c.focus1Coord.y}) `;
+                    if (c.focus2Coord) prompt += `焦点2(${c.focus2Coord.x},${c.focus2Coord.y}) `;
+                    if (c.majorAxisLength) prompt += `长轴${c.majorAxisLength} `;
+                    if (c.directrix) prompt += `准线${c.directrix} `;
+                    prompt += `\n`;
+                });
+            }
+            
+            // 点
+            if (s.points?.length > 0) {
+                prompt += '\n### 点\n';
+                s.points.forEach(p => {
+                    prompt += `- ${p.label}: (${p.x.toFixed(2)}, ${p.y.toFixed(2)})\n`;
+                });
+            }
+            
+            // 线段
+            if (s.segments?.length > 0) {
+                prompt += '\n### 线段\n';
+                s.segments.forEach(seg => {
+                    if (seg.startCoord && seg.endCoord) {
+                        prompt += `- ${seg.label}: (${seg.startCoord.x.toFixed(2)},${seg.startCoord.y.toFixed(2)}) 到 (${seg.endCoord.x.toFixed(2)},${seg.endCoord.y.toFixed(2)})\n`;
+                    } else {
+                        prompt += `- ${seg.label}: ${seg.startLabel || '?'} 到 ${seg.endLabel || '?'}\n`;
+                    }
+                });
+            }
+            
+            prompt += `
+## 要求
+1. 使用 pgfplots 库，支持坐标轴和网格
+2. 保持原始颜色和线宽
+3. 添加适当的标签
+4. 确保数学表达式正确转换
+5. 输出完整的可编译 LaTeX 文档
+
+请生成 TikZ 代码：`;
+
+            return prompt;
+        }
+
+        function showTab(name) {
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            
+            event.target.classList.add('active');
+            document.getElementById('tab-' + name).classList.add('active');
+        }
+    </script>
+</body>
+</html>
