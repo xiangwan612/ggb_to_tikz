@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 
+const BASE_URL = import.meta.env.BASE_URL || '/';
+const withBase = (path) => `${BASE_URL}${String(path || '').replace(/^\/+/, '')}`;
 const GGB_SCRIPT_URL = 'https://www.geogebra.org/apps/deployggb.js';
-const PARSER_SCRIPT_URL = '/ggb-parser.js';
-const TIKZ_SCRIPT_URL = '/tikz-generator.js';
+const PARSER_SCRIPT_URL = withBase('ggb-parser.js');
+const TIKZ_SCRIPT_URL = withBase('tikz-generator.js');
+const LEGACY_PAGE_URL = withBase('legacy-index.html');
 const STORAGE_SHOW_AXES = 'ggb_show_axes';
 const STORAGE_EXPORT_IMAGE_MODE = 'ggb_export_image_mode';
 const STORAGE_EXPORT_SCALE = 'ggb_export_scale';
@@ -1258,14 +1261,14 @@ export default function NativeBoard({ onReadyChange }) {
           <button className="btn btn-lite board-btn" onClick={exportImage}>导出图片</button>
           <button className="btn btn-lite board-btn" onClick={openTikzDebugger}>TikZ 调试</button>
           <button className="btn board-btn" onClick={exportTikz}>导出 TikZ</button>
-          <a className="link" href="/legacy-index.html" target="_blank" rel="noreferrer">旧版备用</a>
+          <a className="link" href={LEGACY_PAGE_URL} target="_blank" rel="noreferrer">旧版备用</a>
         </div>
       </header>
       <div className="board-status">{actionStatus || boardStatus}</div>
       <div className="native-board-host" ref={hostRef} />
       <iframe
         className="legacy-frame legacy-frame-hidden"
-        src="/legacy-index.html"
+        src={LEGACY_PAGE_URL}
         title="Legacy GeoGebra Fallback"
       />
 

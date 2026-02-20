@@ -8,6 +8,8 @@ import {
 import { requestWithFallback } from '../lib/llm';
 import { searchGGBCompletions } from '../lib/ggbCompletions';
 
+const BASE_URL = import.meta.env.BASE_URL || '/';
+const withBase = (path) => `${BASE_URL}${String(path || '').replace(/^\/+/, '')}`;
 const STORAGE_PROVIDER = 'ggb_api_provider';
 const STORAGE_MODEL = 'ggb_api_model';
 const STORAGE_KEYS = 'ggb_provider_keys';
@@ -32,7 +34,7 @@ const STORAGE_TIKZ_POLYGON_THICKNESS = 'ggb_tikz_polygon_thickness';
 const STORAGE_PROMPT_CONFIGS = 'ggb_prompt_configs';
 const STORAGE_ACTIVE_PROMPT = 'ggb_active_prompt';
 const STORAGE_BYOK_CHECKLIST = 'ggb_byok_checklist_v1';
-const DEFAULT_PROMPT_PATH = '/prompts/default-prompt.txt';
+const DEFAULT_PROMPT_PATH = withBase('prompts/default-prompt.txt');
 const DEFAULT_PROMPT_FALLBACK = '你是 GeoGebra 指令生成器。只输出每行一条可执行命令，不要解释。\n画布对象：\n{{CURRENT_OBJECTS}}\n用户输入：\n{{USER_INPUT}}';
 const BUILTIN_PROVIDER_ORDER = ['openai', 'deepseek', 'siliconflow', 'doubao', 'qwen', 'kimi'];
 const BUILTIN_PROVIDER_ICONS = {

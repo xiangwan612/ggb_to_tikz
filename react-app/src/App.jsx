@@ -2,6 +2,7 @@ import CommandPanel from './components/CommandPanel';
 import NativeBoard from './components/NativeBoard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
+const BASE_URL = import.meta.env.BASE_URL || '/';
 const STORAGE_SPLIT = 'ggb_split_left_percent';
 const MIN_LEFT = 38;
 const MAX_LEFT = 78;
@@ -17,7 +18,7 @@ export default function App() {
   const shellRef = useRef(null);
 
   const openLegacy = () => {
-    window.open('/legacy-index.html', '_blank', 'noopener,noreferrer');
+    window.open(`${BASE_URL}legacy-index.html`, '_blank', 'noopener,noreferrer');
   };
 
   const handleBoardReadyChange = useCallback((api, ready) => {
