@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GGB 解析器测试</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #0d1117;
+            color: #c9d1d9;
+            padding: 20px;
+        }
+        .container { max-width: 1200px; margin: 0 auto; }
+        h1 { color: #58a6ff; margin-bottom: 20px; }
+        h2 { color: #7ee787; margin: 20px 0 10px; font-size: 16px; }
+        
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+        
+        textarea {
+            width: 100%;
+            height: 400px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            color: #c9d1d9;
+            padding: 10px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            resize: vertical;
+        }
+        
+        button {
+            background: #238636;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            cursor: pointer;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+        button:hover { background: #2ea043; }
+        
+        .output {
+            background: #161b22;
+            border: 1px solid #30363d;
+            padding: 15px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+            max-height: 600px;
+            overflow: auto;
+        }
+        
+        .error { color: #f85149; }
+        .success { color: #7ee787; }
+        .info { color: #79c0ff; }
+        
+        .collapsible {
+            background: #21262d;
+            padding: 10px;
+            margin: 5px 0;
+            cursor: pointer;
+            border-left: 3px solid #58a6ff;
+        }
+        .collapsible:hover { background: #30363d; }
+        .content { display: none; padding: 10px; background: #0d1117; }
+        .content.active { display: block; }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+        th, td {
+            border: 1px solid #30363d;
+            padding: 6px 8px;
+            text-align: left;
+        }
+        th { background: #21262d; color: #7ee787; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 GGB XML 解析器测试</h1>
+        
+        <div class="grid">
+            <div>
+                <h2>输入 XML</h2>
+                <textarea id="xmlInput" placeholder="粘贴 GGB XML 内容..."></textarea>
+                <button onclick="parseXML()">解析</button>
+                <button onclick="loadSample()">加载示例</button>
+            </div>
+            
+            <div>
+                <h2>解析结果</h2>
+                <div id="output" class="output">点击"解析"或"加载示例"查看结果</div>
+            </div>
+        </div>
+    </div>
+
+    <script src="ggb-parser.js"></script>
+    <script>
+        const sampleXML = `<?xml version="1.0" encoding="utf-8"?>
+<geogebra format="5.0">
+<construction>
+<command name="Ellipse">
+	<input a0="(3, 0)" a1="(-3, 0)" a2="10"/>
+	<output a0="E"/>
+</command>
+<element type="conic" label="E">
+	<show object="true" label="false"/>
+	<objColor r="110" g="109" b="115" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<lineStyle thickness="5" type="0" typeHidden="1" opacity="204"/>
+	<eqnStyle style="implicit"/>
+	<eigenvectors x0="1" y0="0" z0="1" x1="0" y1="1" z1="1"/>
+	<matrix A0="1456" A1="1600" A2="-145600" A3="0" A4="0" A5="0"/>
+</element>
+<command name="Parabola">
+	<input a0="(2, 0)" a1="x = -2"/>
+	<output a0="P"/>
+</command>
+<element type="conic" label="P">
+	<show object="true" label="false"/>
+	<objColor r="110" g="109" b="115" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<lineStyle thickness="5" type="0" typeHidden="1" opacity="204"/>
+	<eqnStyle style="implicit"/>
+	<eigenvectors x0="1" y0="0" z0="1" x1="0" y1="1" z1="1"/>
+	<matrix A0="0" A1="1" A2="0" A3="0" A4="-4" A5="0"/>
+</element>
+<command name="Hyperbola">
+	<input a0="(4, 0)" a1="(-4, 0)" a2="6"/>
+	<output a0="H"/>
+</command>
+<element type="conic" label="H">
+	<show object="true" label="false"/>
+	<objColor r="110" g="109" b="115" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<lineStyle thickness="5" type="0" typeHidden="1" opacity="204"/>
+	<eqnStyle style="implicit"/>
+	<eigenvectors x0="1" y0="0" z0="1" x1="0" y1="1" z1="1"/>
+	<matrix A0="320" A1="576" A2="-11520" A3="0" A4="0" A5="0"/>
+</element>
+<expression label="f" exp="f(x) = 1 / x" type="function"/>
+<element type="function" label="f">
+	<show object="true" label="false" ev="4"/>
+	<objColor r="0" g="103" b="88" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<fixed val="true"/>
+	<lineStyle thickness="5" type="0" typeHidden="1" opacity="178"/>
+</element>
+<element type="point" label="A">
+	<show object="true" label="true"/>
+	<objColor r="21" g="101" b="192" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<animation step="0.1" type="1" playing="false"/>
+	<pointSize val="5"/>
+	<pointStyle val="0"/>
+	<coords x="-6.75" y="3.07" z="1"/>
+</element>
+<element type="point" label="B">
+	<show object="true" label="true"/>
+	<objColor r="21" g="101" b="192" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<animation step="0.1" type="1" playing="false"/>
+	<pointSize val="5"/>
+	<pointStyle val="0"/>
+	<coords x="-2" y="-2" z="1"/>
+</element>
+<command name="Segment">
+	<input a0="A" a1="B"/>
+	<output a0="j"/>
+</command>
+<element type="segment" label="j">
+	<show object="true" label="false"/>
+	<objColor r="110" g="109" b="115" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<lineStyle thickness="5" type="0" typeHidden="1" opacity="204"/>
+	<eqnStyle style="explicit"/>
+	<outlyingIntersections val="false"/>
+	<keepTypeOnTransform val="true"/>
+	<startStyle val="default"/>
+	<endStyle val="default"/>
+	<coords x="5.07" y="4.75" z="19.64"/>
+</element>
+<element type="point" label="C">
+	<show object="true" label="true"/>
+	<objColor r="21" g="101" b="192" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<animation step="0.1" type="1" playing="false"/>
+	<pointSize val="5"/>
+	<pointStyle val="0"/>
+	<coords x="-3" y="3" z="1"/>
+</element>
+<element type="point" label="D">
+	<show object="true" label="true"/>
+	<objColor r="21" g="101" b="192" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<animation step="0.1" type="1" playing="false"/>
+	<pointSize val="5"/>
+	<pointStyle val="0"/>
+	<coords x="-7" y="-2" z="1"/>
+</element>
+<command name="Line">
+	<input a0="C" a1="D"/>
+	<output a0="k"/>
+</command>
+<element type="line" label="k">
+	<show object="true" label="false"/>
+	<objColor r="110" g="109" b="115" alpha="0"/>
+	<layer val="0"/>
+	<labelMode val="0"/>
+	<lineStyle thickness="5" type="0" typeHidden="1" opacity="204"/>
+	<eqnStyle style="explicit"/>
+	<coords x="5" y="-4" z="27"/>
+</element>
+</construction>
+</geogebra>`;
+
+        function loadSample() {
+            document.getElementById('xmlInput').value = sampleXML;
+            parseXML();
+        }
+
+        function parseXML() {
+            const xml = document.getElementById('xmlInput').value.trim();
+            const output = document.getElementById('output');
+            
+            if (!xml) {
+                output.innerHTML = '<span class="error">请输入 XML</span>';
+                return;
+            }
+            
+            try {
+                const parser = new GGBParser(xml);
+                const result = parser.parse();
+                
+                let html = '';
+                
+                // 统计信息
+                html += `<div class="collapsible" onclick="toggle(this)">
+                    <span class="success">📊 统计: ${result.stats.total} 个元素, 可见: ${result.stats.visible}</span>
+                </div>`;
+                html += `<div class="content">`;
+                html += JSON.stringify(result.stats, null, 2);
+                html += `</div>`;
+                
+                // 圆锥曲线
+                if (result.structured.conics.length > 0) {
+                    html += `<div class="collapsible" onclick="toggle(this)">
+                        <span class="info">⭕ 圆锥曲线 (${result.structured.conics.length})</span>
+                    </div>`;
+                    html += `<div class="content"><table><tr><th>类型</th><th>标签</th><th>可见</th><th>参数</th></tr>`;
+                    result.structured.conics.forEach(c => {
+                        const params = [];
+                        if (c.focus1Coord) params.push(`焦点1:(${c.focus1Coord.x},${c.focus1Coord.y})`);
+                        if (c.focus1Label) params.push(`焦点1:${c.focus1Label}`);
+                        if (c.focus2Coord) params.push(`焦点2:(${c.focus2Coord.x},${c.focus2Coord.y})`);
+                        if (c.focus2Label) params.push(`焦点2:${c.focus2Label}`);
+                        if (c.focusCoord) params.push(`焦点:(${c.focusCoord.x},${c.focusCoord.y})`);
+                        if (c.focusLabel) params.push(`焦点:${c.focusLabel}`);
+                        if (c.directrix) params.push(`准线:${c.directrix}`);
+                        if (c.majorAxisLength) params.push(`长轴:${c.majorAxisLength}`);
+                        if (c.constant) params.push(`常数:${c.constant}`);
+                        if (c.passCoord) params.push(`过点:(${c.passCoord.x},${c.passCoord.y})`);
+                        if (c.passLabel) params.push(`过点:${c.passLabel}`);
+                        if (c.radius) params.push(`半径:${c.radius}`);
+                        
+                        html += `<tr><td>${c.conicType}</td><td>${c.label}</td><td>${c.visible}</td><td>${params.join(', ')}</td></tr>`;
+                    });
+                    html += `</table></div>`;
+                }
+                
+                // 线段
+                if (result.structured.segments.length > 0) {
+                    html += `<div class="collapsible" onclick="toggle(this)">
+                        <span class="info">📏 线段 (${result.structured.segments.length})</span>
+                    </div>`;
+                    html += `<div class="content"><table><tr><th>标签</th><th>可见</th><th>起点</th><th>终点</th></tr>`;
+                    result.structured.segments.forEach(s => {
+                        const start = s.startCoord ? `(${s.startCoord.x},${s.startCoord.y})` : s.startLabel;
+                        const end = s.endCoord ? `(${s.endCoord.x},${s.endCoord.y})` : s.endLabel;
+                        html += `<tr><td>${s.label}</td><td>${s.visible}</td><td>${start}</td><td>${end}</td></tr>`;
+                    });
+                    html += `</table></div>`;
+                }
+                
+                // 直线
+                if (result.structured.lines.length > 0) {
+                    html += `<div class="collapsible" onclick="toggle(this)">
+                        <span class="info">📐 直线 (${result.structured.lines.length})</span>
+                    </div>`;
+                    html += `<div class="content"><table><tr><th>标签</th><th>可见</th><th>一般式</th><th>两点</th></tr>`;
+                    result.structured.lines.forEach(l => {
+                        const eq = l.equation || '-';
+                        const pts = [];
+                        if (l.point1Coord) pts.push(`(${l.point1Coord.x},${l.point1Coord.y})`);
+                        if (l.point1Label) pts.push(l.point1Label);
+                        if (l.point2Coord) pts.push(`(${l.point2Coord.x},${l.point2Coord.y})`);
+                        if (l.point2Label) pts.push(l.point2Label);
+                        html += `<tr><td>${l.label}</td><td>${l.visible}</td><td>${eq}</td><td>${pts.join(' - ')}</td></tr>`;
+                    });
+                    html += `</table></div>`;
+                }
+                
+                // 函数
+                if (result.structured.functions.length > 0) {
+                    html += `<div class="collapsible" onclick="toggle(this)">
+                        <span class="info">📈 函数 (${result.structured.functions.length})</span>
+                    </div>`;
+                    html += `<div class="content"><table><tr><th>标签</th><th>可见</th><th>表达式</th></tr>`;
+                    result.structured.functions.forEach(f => {
+                        html += `<tr><td>${f.label}</td><td>${f.visible}</td><td>${f.exp || '-'}</td></tr>`;
+                    });
+                    html += `</table></div>`;
+                }
+                
+                // 点
+                if (result.structured.points.length > 0) {
+                    html += `<div class="collapsible" onclick="toggle(this)">
+                        <span class="info">📍 点 (${result.structured.points.length})</span>
+                    </div>`;
+                    html += `<div class="content"><table><tr><th>标签</th><th>可见</th><th>坐标</th></tr>`;
+                    result.structured.points.forEach(p => {
+                        html += `<tr><td>${p.label}</td><td>${p.visible}</td><td>(${p.x}, ${p.y})</td></tr>`;
+                    });
+                    html += `</table></div>`;
+                }
+                
+                // 原始 JSON
+                html += `<div class="collapsible" onclick="toggle(this)">
+                    <span class="info">📄 完整 JSON</span>
+                </div>`;
+                html += `<div class="content"><pre>${JSON.stringify(result.structured, null, 2)}</pre></div>`;
+                
+                output.innerHTML = html;
+                
+            } catch (err) {
+                output.innerHTML = `<span class="error">错误: ${err.message}</span><br><pre>${err.stack}</pre>`;
+            }
+        }
+        
+        function toggle(el) {
+            el.nextElementSibling.classList.toggle('active');
+        }
+    </script>
+</body>
+</html>
