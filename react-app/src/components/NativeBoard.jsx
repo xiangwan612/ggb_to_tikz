@@ -3,30 +3,86 @@ import { useEffect, useRef, useState } from 'react';
 const BASE_URL = import.meta.env.BASE_URL || '/';
 const withBase = (path) => `${BASE_URL}${String(path || '').replace(/^\/+/, '')}`;
 const GGB_SCRIPT_URL = 'https://www.geogebra.org/apps/deployggb.js';
+const TIKZJAX_SCRIPT_URL = 'https://tikzjax.com/v1/tikzjax.js';
 const PARSER_SCRIPT_URL = withBase('ggb-parser.js');
 const TIKZ_SCRIPT_URL = withBase('tikz-generator.js');
 const LEGACY_PAGE_URL = withBase('legacy-index.html');
 const STORAGE_SHOW_AXES = 'ggb_show_axes';
 const STORAGE_EXPORT_IMAGE_MODE = 'ggb_export_image_mode';
 const STORAGE_EXPORT_SCALE = 'ggb_export_scale';
-const STORAGE_TIKZ_SCALE = 'ggb_tikz_scale';
 const STORAGE_TIKZ_LINE_EXTEND = 'ggb_tikz_line_extend';
 const STORAGE_TIKZ_POINT_RADIUS = 'ggb_tikz_point_radius';
 const STORAGE_TIKZ_POLYGON_FILL = 'ggb_tikz_polygon_fill';
 const STORAGE_TIKZ_AXIS_THICKNESS = 'ggb_tikz_axis_thickness';
 const STORAGE_TIKZ_CONIC_THICKNESS = 'ggb_tikz_conic_thickness';
+const STORAGE_TIKZ_FUNCTION_THICKNESS = 'ggb_tikz_function_thickness';
 const STORAGE_TIKZ_LINE_THICKNESS = 'ggb_tikz_line_thickness';
 const STORAGE_TIKZ_SEGMENT_THICKNESS = 'ggb_tikz_segment_thickness';
 const STORAGE_TIKZ_POLYGON_THICKNESS = 'ggb_tikz_polygon_thickness';
+const STORAGE_TIKZ_SHOW_AXIS = 'ggb_tikz_show_axis';
 const STORAGE_TIKZ_ANGLE_REGION = 'ggb_tikz_angle_region';
 const STORAGE_TIKZ_OPT_TARGET_CM = 'ggb_tikz_opt_target_cm'; // 兼容旧版本
 const STORAGE_TIKZ_OPT_TARGET_W_CM = 'ggb_tikz_opt_target_w_cm';
 const STORAGE_TIKZ_OPT_TARGET_H_CM = 'ggb_tikz_opt_target_h_cm';
 const STORAGE_TIKZ_OPT_PRIORITY = 'ggb_tikz_opt_priority';
+const STORAGE_TIKZ_OPT_AXIS_PAD = 'ggb_tikz_opt_axis_pad';
+const STORAGE_TIKZ_OPT_CLIP_PAD = 'ggb_tikz_opt_clip_pad';
+const STORAGE_TIKZ_OPT_AXIS_SYMMETRY = 'ggb_tikz_opt_axis_symmetry';
+const STORAGE_TIKZ_OPT_AXIS_SYMMETRY_MODE = 'ggb_tikz_opt_axis_symmetry_mode';
 const STORAGE_TIKZ_OPT_LABEL_OFFSET_PT = 'ggb_tikz_opt_label_offset_pt';
 const STORAGE_TIKZ_OPT_LABEL_FONT_PT = 'ggb_tikz_opt_label_font_pt';
+const STORAGE_TIKZ_OPT_LABEL_MAX_SHIFT_PT = 'ggb_tikz_opt_label_max_shift_pt';
+const STORAGE_TIKZ_LABEL_OVERRIDES = 'ggb_tikz_label_overrides';
 const DEFAULT_TIKZ_BOUNDS = { xmin: -2.3, xmax: 2.8, ymin: -2.6, ymax: 2.4 };
-const ALLOWED_TIKZ_THICKNESS = new Set(['thin', 'semithick', 'thick', 'very thick', 'ultra thick']);
+const TIKZ_THICKNESS_OPTIONS = ['thin', 'semithick', 'thick', 'very thick', 'ultra thick'];
+const ALLOWED_TIKZ_THICKNESS = new Set(TIKZ_THICKNESS_OPTIONS);
+const LABEL_POSITION_OPTIONS = ['above right', 'above left', 'below right', 'below left', 'above', 'below', 'right', 'left'];
+const LABEL_NUDGE_DIRECTIONS = [
+  [{ icon: '↖', dx: -1, dy: 1, title: '左上' }, { icon: '↑', dx: 0, dy: 1, title: '上' }, { icon: '↗', dx: 1, dy: 1, title: '右上' }],
+  [{ icon: '←', dx: -1, dy: 0, title: '左' }, { icon: '⊙', dx: 0, dy: 0, title: '重置偏移' }, { icon: '→', dx: 1, dy: 0, title: '右' }],
+  [{ icon: '↙', dx: -1, dy: -1, title: '左下' }, { icon: '↓', dx: 0, dy: -1, title: '下' }, { icon: '↘', dx: 1, dy: -1, title: '右下' }]
+];
+let tikzJaxRenderFn = null;
+let tikzJaxReadyPromise = null;
+
+function ensureTikzJaxReady() {
+  if (typeof window === 'undefined') {
+    return Promise.reject(new Error('当前环境不支持 TikZJax'));
+  }
+  if (typeof tikzJaxRenderFn === 'function') {
+    return Promise.resolve(tikzJaxRenderFn);
+  }
+  if (tikzJaxReadyPromise) {
+    return tikzJaxReadyPromise;
+  }
+
+  tikzJaxReadyPromise = new Promise((resolve, reject) => {
+    const prevOnload = window.onload;
+    const script = document.createElement('script');
+    script.src = `${TIKZJAX_SCRIPT_URL}?v=${Date.now()}`;
+    script.async = true;
+    script.onload = () => {
+      if (typeof window.onload === 'function') {
+        tikzJaxRenderFn = window.onload;
+        window.onload = prevOnload;
+        resolve(tikzJaxRenderFn);
+      } else {
+        window.onload = prevOnload;
+        reject(new Error('TikZJax 初始化函数不可用'));
+      }
+    };
+    script.onerror = () => {
+      window.onload = prevOnload;
+      reject(new Error('TikZJax 脚本加载失败'));
+    };
+    document.head.appendChild(script);
+  }).catch((err) => {
+    tikzJaxReadyPromise = null;
+    throw err;
+  });
+
+  return tikzJaxReadyPromise;
+}
 
 function ensureGGBScript() {
   return new Promise((resolve, reject) => {
@@ -144,12 +200,13 @@ function readTikzThickness(storageKey, fallback) {
 }
 
 function readTikzSettings() {
-  const tikzScale = Math.max(0.2, Math.min(5, Number(localStorage.getItem(STORAGE_TIKZ_SCALE) || 1.2)));
+  const showAxis = (localStorage.getItem(STORAGE_TIKZ_SHOW_AXIS) || 'on') === 'on';
   const lineExtend = Math.max(0, Math.min(6, Number(localStorage.getItem(STORAGE_TIKZ_LINE_EXTEND) || 0.25)));
   const pointRadiusPt = Math.max(0.05, Math.min(3, Number(localStorage.getItem(STORAGE_TIKZ_POINT_RADIUS) || 0.25)));
   const polygonFillColor = String(localStorage.getItem(STORAGE_TIKZ_POLYGON_FILL) || 'black').trim() || 'black';
   const axisThickness = readTikzThickness(STORAGE_TIKZ_AXIS_THICKNESS, 'semithick');
   const conicThickness = readTikzThickness(STORAGE_TIKZ_CONIC_THICKNESS, 'thick');
+  const functionThickness = readTikzThickness(STORAGE_TIKZ_FUNCTION_THICKNESS, 'thick');
   const lineThickness = readTikzThickness(STORAGE_TIKZ_LINE_THICKNESS, 'semithick');
   const segmentThickness = readTikzThickness(STORAGE_TIKZ_SEGMENT_THICKNESS, 'thick');
   const polygonThickness = readTikzThickness(STORAGE_TIKZ_POLYGON_THICKNESS, 'thick');
@@ -159,12 +216,13 @@ function readTikzSettings() {
     : 'auto';
 
   return {
-    tikzScale,
+    showAxis,
     lineExtend,
     pointRadiusPt,
     polygonFillColor,
     axisThickness,
     conicThickness,
+    functionThickness,
     lineThickness,
     segmentThickness,
     polygonThickness,
@@ -302,34 +360,13 @@ function convertTkzAnglesForPreview(tikzText) {
   return out.join('\n');
 }
 
-function buildTikzPreviewHtml(rawCode) {
+function buildTikzPreviewContent(rawCode) {
   const tikzRaw = extractTikzPictureBlock(rawCode);
   const tikzNoComments = stripLatexComments(tikzRaw);
   const tikzCompat = convertTkzAnglesForPreview(tikzNoComments);
   const tikzCode = makeAsciiSafeForBtoa(tikzCompat).replace(/<\/script>/gi, '<\\/script>');
   const preamble = '\\usetikzlibrary{arrows.meta,calc,intersections}';
-  return `<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <style>
-    body{margin:0;padding:12px;background:#fff;color:#1f2a3d;font-family:Segoe UI,PingFang SC,Microsoft YaHei,sans-serif;}
-    .wrap{border:1px solid #dce4f0;border-radius:10px;padding:12px;min-height:120px;}
-    .hint{font-size:12px;color:#5f6f88;margin-top:8px;}
-  </style>
-  <script src="https://tikzjax.com/v1/tikzjax.js"></script>
-</head>
-<body>
-  <div class="wrap">
-    <script type="text/tikz">
-${preamble}
-${tikzCode}
-    </script>
-  </div>
-  <div class="hint">若预览为空，通常是 TikZ 代码超出 TikZJax 支持范围，可直接复制到本地 LaTeX 编译。</div>
-</body>
-</html>`;
+  return `${preamble}\n${tikzCode}`;
 }
 
 function estimateTikzSizeCm(rawCode) {
@@ -471,7 +508,7 @@ function roundNice(v) {
   return Math.ceil(v * 2) / 2;
 }
 
-function computeOptimizedAxisBounds(points) {
+function computeOptimizedAxisBounds(points, axisPad = 0.5) {
   if (!points.length) {
     return { xmin: -3, xmax: 3, ymin: -3, ymax: 3 };
   }
@@ -489,17 +526,18 @@ function computeOptimizedAxisBounds(points) {
     maxY = Math.max(maxY, p.y);
   });
 
-  // 新规则：直接取边界并向外扩 0.5
-  let xmin = minX - 0.5;
-  let xmax = maxX + 0.5;
-  let ymin = minY - 0.5;
-  let ymax = maxY + 0.5;
+  const pad = Math.max(0.1, Math.min(5, Number(axisPad) || 0.5));
+  // 新规则：直接取边界并向外扩 pad
+  let xmin = minX - pad;
+  let xmax = maxX + pad;
+  let ymin = minY - pad;
+  let ymax = maxY + pad;
 
-  // 原点必须可见；若某侧不足，则以 0.5 起/止
-  if (xmin > -0.5) xmin = -0.5;
-  if (xmax < 0.5) xmax = 0.5;
-  if (ymin > -0.5) ymin = -0.5;
-  if (ymax < 0.5) ymax = 0.5;
+  // 原点必须可见；若某侧不足，则以 pad 起/止
+  if (xmin > -pad) xmin = -pad;
+  if (xmax < pad) xmax = pad;
+  if (ymin > -pad) ymin = -pad;
+  if (ymax < pad) ymax = pad;
 
   // 刻度友好：向外 round 到 0.5
   const floorHalf = (v) => Math.floor(v * 2) / 2;
@@ -516,29 +554,206 @@ function computeOptimizedAxisBounds(points) {
   return { xmin, xmax, ymin, ymax };
 }
 
-function replaceAxisAndOrigin(out, bounds) {
+function scoreSymmetricBounds(bounds, mode = 'area') {
+  const w = Math.max(1e-6, Number(bounds.xmax) - Number(bounds.xmin));
+  const h = Math.max(1e-6, Number(bounds.ymax) - Number(bounds.ymin));
+  const area = w * h;
+  if (mode === 'max_area') return [-area, h, w];
+  if (mode === 'min_height') return [h, area, w];
+  if (mode === 'min_width') return [w, area, h];
+  return [area, h, w];
+}
+
+function selectSymmetricAxisBounds(baseBounds, mode = 'area') {
+  const b = {
+    xmin: Number(baseBounds?.xmin),
+    xmax: Number(baseBounds?.xmax),
+    ymin: Number(baseBounds?.ymin),
+    ymax: Number(baseBounds?.ymax)
+  };
+  if (![b.xmin, b.xmax, b.ymin, b.ymax].every(Number.isFinite)) return baseBounds;
+
+  const maxAbsX = Math.max(Math.abs(b.xmin), Math.abs(b.xmax));
+  const maxAbsY = Math.max(Math.abs(b.ymin), Math.abs(b.ymax));
+  const loYX = Math.min(b.xmin, b.ymin);
+  const hiYX = Math.max(b.xmax, b.ymax);
+
+  // 你要求的“整体面积最大优先”规则：
+  // x、y 分别取绝对值较大的那一侧，再用相反数覆盖另一侧（即同时关于 x/y 轴对称）
+  if (mode === 'max_area') {
+    return {
+      xmin: Math.floor((-maxAbsX) * 2) / 2,
+      xmax: Math.ceil(maxAbsX * 2) / 2,
+      ymin: Math.floor((-maxAbsY) * 2) / 2,
+      ymax: Math.ceil(maxAbsY * 2) / 2
+    };
+  }
+
+  const candidates = [
+    // 关于 x 轴对称
+    { xmin: b.xmin, xmax: b.xmax, ymin: -maxAbsY, ymax: maxAbsY },
+    // 关于 y 轴对称
+    { xmin: -maxAbsX, xmax: maxAbsX, ymin: b.ymin, ymax: b.ymax },
+    // 关于 y = x 对称（x/y 同范围）
+    { xmin: loYX, xmax: hiYX, ymin: loYX, ymax: hiYX },
+    // 关于 y = -x 对称
+    (() => {
+      const xMin = Math.min(b.xmin, -b.ymax);
+      const xMax = Math.max(b.xmax, -b.ymin);
+      return { xmin: xMin, xmax: xMax, ymin: -xMax, ymax: -xMin };
+    })()
+  ];
+
+  let best = candidates[0];
+  let bestScore = scoreSymmetricBounds(best, mode);
+  for (let i = 1; i < candidates.length; i++) {
+    const c = candidates[i];
+    const s = scoreSymmetricBounds(c, mode);
+    let better = false;
+    for (let j = 0; j < s.length; j++) {
+      if (s[j] < bestScore[j] - 1e-9) { better = true; break; }
+      if (s[j] > bestScore[j] + 1e-9) break;
+    }
+    if (better) {
+      best = c;
+      bestScore = s;
+    }
+  }
+
+  return {
+    xmin: Math.floor(best.xmin * 2) / 2,
+    xmax: Math.ceil(best.xmax * 2) / 2,
+    ymin: Math.floor(best.ymin * 2) / 2,
+    ymax: Math.ceil(best.ymax * 2) / 2
+  };
+}
+
+function getClipBounds(bounds, clipPad = 0) {
+  const pad = Math.max(-3, Math.min(3, Number(clipPad) || 0));
+  let xmin = Number((bounds.xmin - pad).toFixed(2));
+  let xmax = Number((bounds.xmax + pad).toFixed(2));
+  let ymin = Number((bounds.ymin - pad).toFixed(2));
+  let ymax = Number((bounds.ymax + pad).toFixed(2));
+
+  // 兜底：避免 clip 退化或反转
+  if (!(xmax > xmin)) {
+    const cx = (Number(bounds.xmin) + Number(bounds.xmax)) / 2;
+    xmin = Number((cx - 0.25).toFixed(2));
+    xmax = Number((cx + 0.25).toFixed(2));
+  }
+  if (!(ymax > ymin)) {
+    const cy = (Number(bounds.ymin) + Number(bounds.ymax)) / 2;
+    ymin = Number((cy - 0.25).toFixed(2));
+    ymax = Number((cy + 0.25).toFixed(2));
+  }
+  return { xmin, xmax, ymin, ymax };
+}
+
+function replaceAutoClipBounds(out, bounds, clipPad = 0) {
+  const { xmin, xmax, ymin, ymax } = getClipBounds(bounds, clipPad);
+
+  const re = /(%\s*按坐标轴边界裁剪[^\n]*\n)(\s*)\\clip\s*\([^)]*\)\s*rectangle\s*\([^)]*\)\s*;/g;
+  return String(out || '').replace(
+    re,
+    (_m, comment, indent) => `${comment}${indent}\\clip (${xmin},${ymin}) rectangle (${xmax},${ymax});`
+  );
+}
+
+function alignFunctionDomainsToClip(out, bounds, clipPad = 0) {
+  const { xmin, xmax } = getClipBounds(bounds, clipPad);
+  const lines = String(out || '').split('\n');
+  const domainRe = /domain\s*=\s*(-?\d+(?:\.\d+)?)\s*:\s*(-?\d+(?:\.\d+)?)/i;
+  const inFuncPlot = (ln) => /\\draw\[/.test(ln) && /plot\s*\(\\x,\{/.test(ln);
+  const hasPotentialDiscontinuity = (expr) => {
+    const s = String(expr || '').toLowerCase();
+    if (!s) return false;
+    if (/\b(tan|cot|sec|csc|ln|log|sqrt|asin|acos)\s*\(/i.test(s)) return true;
+    if (s.includes('/')) return true;
+    return false;
+  };
+  const toNum = (v) => Number(Number(v).toFixed(2));
+
+  const mapped = lines.map((ln) => {
+    if (!inFuncPlot(ln)) return ln;
+    const m = ln.match(domainRe);
+    if (!m) return ln;
+    const exprMatch = ln.match(/plot\s*\(\\x,\{([\s\S]*?)\}\)\s*;/i);
+    const expr = exprMatch ? exprMatch[1] : '';
+    const conservative = hasPotentialDiscontinuity(expr);
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return ln;
+    const forward = a <= b;
+    const lo = Math.min(a, b);
+    const hi = Math.max(a, b);
+    const nLo = conservative ? Math.max(lo, xmin) : xmin;
+    const nHi = conservative ? Math.min(hi, xmax) : xmax;
+    if (!(nHi > nLo)) return '';
+    return ln.replace(
+      domainRe,
+      forward
+        ? `domain=${toNum(nLo)}:${toNum(nHi)}`
+        : `domain=${toNum(nHi)}:${toNum(nLo)}`
+    );
+  });
+
+  return mapped.filter((ln) => ln !== '').join('\n');
+}
+
+function replaceAxisAndOrigin(out, bounds, options = {}) {
+  const showAxis = options.showAxis !== false;
+  const axisThickness = ALLOWED_TIKZ_THICKNESS.has(String(options.axisThickness || '').trim())
+    ? String(options.axisThickness).trim()
+    : 'semithick';
+  const pointRadiusPtRaw = Number(options.pointRadiusPt);
+  const pointRadiusPt = Number.isFinite(pointRadiusPtRaw)
+    ? Math.max(0.05, Math.min(10, pointRadiusPtRaw))
+    : 0.5;
   const srcLines = String(out || '').split('\n');
   const beginRe = /^\s*\\begin\{tikzpicture\}/;
+  const endRe = /^\s*\\end\{tikzpicture\}/;
   const isAxisComment = (ln) => /^\s*%\s*坐标轴\s*$/.test(ln);
   const isXAxis = (ln) => /\\draw\[[^\]]*->/.test(ln) && /\{\$x\$\}\s*;/.test(ln);
   const isYAxis = (ln) => /\\draw\[[^\]]*->/.test(ln) && /\{\$y\$\}\s*;/.test(ln);
   const isOrigin = (ln) => /\\node\s+at\s*\([^)]*\)\s*\{\$O\$\}\s*;/.test(ln);
-  const xLine = `    \\draw[->, semithick] (${bounds.xmin},0) -- (${bounds.xmax},0) node[right] {$x$};`;
-  const yLine = `    \\draw[->, semithick] (0,${bounds.ymin}) -- (0,${bounds.ymax}) node[above] {$y$};`;
-  const oLine = '    \\node at (-0.18,-0.18) {$O$};';
+  const isAutoOriginPoint = (ln) => /%\s*axis-origin\s*$/.test(ln);
+  const isPointsComment = (ln) => /^\s*%\s*点\s*$/.test(ln);
+  const isPointLabelO = (ln) => /^(\s*\\fill\[[^\]]*\]\s*\([^)]+\)\s*circle\[radius=[^\]]+\]\s*)node\[[^\]]*\]\s*\{\$O\$\}\s*;/.test(ln);
+  const xLine = `    \\draw[->, ${axisThickness}] (${bounds.xmin},0) -- (${bounds.xmax},0) node[right] {$x$};`;
+  const yLine = `    \\draw[->, ${axisThickness}] (0,${bounds.ymin}) -- (0,${bounds.ymax}) node[above] {$y$};`;
+  const originPointLine = `\\fill[black] (0.00,0.00) circle[radius=${Number(pointRadiusPt.toFixed(3))}pt] node[above right, xshift=0pt, yshift=0pt] {$O$}; % axis-origin`;
 
   const lines = [];
   let beginIdx = -1;
+  let hasManualOriginPoint = false;
   srcLines.forEach((ln) => {
-    if (isAxisComment(ln) || isXAxis(ln) || isYAxis(ln) || isOrigin(ln)) return;
+    if (isAxisComment(ln) || isXAxis(ln) || isYAxis(ln) || isOrigin(ln) || isAutoOriginPoint(ln)) return;
+    if (isPointLabelO(ln)) hasManualOriginPoint = true;
     lines.push(ln);
   });
   lines.forEach((ln, idx) => {
     if (beginRe.test(ln) && beginIdx < 0) beginIdx = idx;
   });
+  if (!showAxis) return lines.join('\n');
   const insertAt = beginIdx >= 0 ? beginIdx + 1 : 0;
-  const add = ['    % 坐标轴', xLine, yLine, oLine];
+  const add = ['    % 坐标轴', xLine, yLine];
   lines.splice(insertAt, 0, ...add);
+
+  if (!hasManualOriginPoint) {
+    let pIdx = -1;
+    let endIdx = -1;
+    lines.forEach((ln, idx) => {
+      if (isPointsComment(ln) && pIdx < 0) pIdx = idx;
+      if (endRe.test(ln) && endIdx < 0) endIdx = idx;
+    });
+    if (pIdx >= 0) {
+      lines.splice(pIdx + 1, 0, originPointLine);
+    } else if (endIdx >= 0) {
+      lines.splice(endIdx, 0, '% 点', originPointLine);
+    } else {
+      lines.push('% 点', originPointLine);
+    }
+  }
 
   return lines.join('\n');
 }
@@ -549,6 +764,159 @@ function estimateLabelTextWidthCm(text, fontPt = 12) {
   return Math.max(0.22, (fontPt / 12) * (0.09 * n + 0.12));
 }
 
+function readLabelMaxShiftPt() {
+  try {
+    const raw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_MAX_SHIFT_PT) || 12);
+    return Number.isFinite(raw) ? Math.max(2, Math.min(50, raw)) : 12;
+  } catch {
+    return 12;
+  }
+}
+
+function normalizeLabelOverride(item, maxShiftPt = readLabelMaxShiftPt()) {
+  if (!item || typeof item !== 'object') return null;
+  const position = LABEL_POSITION_OPTIONS.includes(String(item.position || '').trim())
+    ? String(item.position || '').trim()
+    : 'above right';
+  const xshift = Number(item.xshift);
+  const yshift = Number(item.yshift);
+  const clamp = Number.isFinite(Number(maxShiftPt))
+    ? Math.max(2, Math.min(50, Number(maxShiftPt)))
+    : 12;
+  return {
+    position,
+    xshift: Number.isFinite(xshift) ? Math.max(-clamp, Math.min(clamp, xshift)) : 0,
+    yshift: Number.isFinite(yshift) ? Math.max(-clamp, Math.min(clamp, yshift)) : 0
+  };
+}
+
+function readLabelOverrides() {
+  try {
+    const raw = localStorage.getItem(STORAGE_TIKZ_LABEL_OVERRIDES);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const out = {};
+    Object.keys(parsed).forEach((k) => {
+      const nk = String(k || '').trim();
+      if (!nk) return;
+      const n = normalizeLabelOverride(parsed[k]);
+      if (n) out[nk] = n;
+    });
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function writeLabelOverrides(map) {
+  const out = {};
+  Object.keys(map || {}).forEach((k) => {
+    const nk = String(k || '').trim();
+    if (!nk) return;
+    const n = normalizeLabelOverride(map[k]);
+    if (n) out[nk] = n;
+  });
+  localStorage.setItem(STORAGE_TIKZ_LABEL_OVERRIDES, JSON.stringify(out));
+  return out;
+}
+
+function extractAdjustableLabelOptionsMap(code) {
+  const lines = String(code || '').split('\n');
+  const pointLineRe = /^(\s*\\fill\[[^\]]*\]\s*)(\([^)]+\))(\s*circle\[radius=[^\]]+\]\s*)node\[([^\]]*)\]\s*\{\$([^$]*)\$\}(;.*)$/;
+  const nodeAtLineRe = /^(\s*\\node)\s*(\[[^\]]*\])?\s*at\s*(\([^)]+\))\s*\{\$([^$]*)\$\}(;.*)$/;
+  const out = {};
+  lines.forEach((ln) => {
+    const pm = ln.match(pointLineRe);
+    if (pm) {
+      const opts = String(pm[4] || '');
+      const label = String(pm[5] || '').trim();
+      if (!label) return;
+      const position = LABEL_POSITION_OPTIONS.find((p) => opts.includes(p)) || 'above right';
+      const xMatch = opts.match(/xshift\s*=\s*(-?\d+(?:\.\d+)?)pt/i);
+      const yMatch = opts.match(/yshift\s*=\s*(-?\d+(?:\.\d+)?)pt/i);
+      out[label] = {
+        position,
+        xshift: xMatch ? Number(xMatch[1]) : 0,
+        yshift: yMatch ? Number(yMatch[1]) : 0
+      };
+      return;
+    }
+    const nm = ln.match(nodeAtLineRe);
+    if (nm) {
+      const opts = String((nm[2] || '').replace(/^\[|\]$/g, ''));
+      const label = String(nm[4] || '').trim();
+      if (!label) return;
+      const position = LABEL_POSITION_OPTIONS.find((p) => opts.includes(p)) || 'above right';
+      const xMatch = opts.match(/xshift\s*=\s*(-?\d+(?:\.\d+)?)pt/i);
+      const yMatch = opts.match(/yshift\s*=\s*(-?\d+(?:\.\d+)?)pt/i);
+      out[label] = {
+        position,
+        xshift: xMatch ? Number(xMatch[1]) : 0,
+        yshift: yMatch ? Number(yMatch[1]) : 0
+      };
+    }
+  });
+  return out;
+}
+
+function extractAdjustableLabelsFromTikz(code) {
+  return Object.keys(extractAdjustableLabelOptionsMap(code)).sort();
+}
+
+function applyLabelOverridesToTikzCode(code, overrides = {}, labelFontPt = 12, labelMaxShiftPt = 12) {
+  const lines = String(code || '').split('\n');
+  const pointLineRe = /^(\s*\\fill\[[^\]]*\]\s*)(\([^)]+\))(\s*circle\[radius=[^\]]+\]\s*)node\[[^\]]*\]\s*\{\$([^$]*)\$\}(;.*)$/;
+  const nodeAtLineRe = /^(\s*\\node)\s*(\[[^\]]*\])?\s*at\s*(\([^)]+\))\s*\{\$([^$]*)\$\}(;.*)$/;
+  const fontPt = Math.max(8, Math.min(20, Number(labelFontPt) || 12));
+  const fontOpt = `font=\\fontsize{${fontPt}pt}{${Math.round(fontPt + 1)}pt}\\selectfont`;
+  const normalizeNodeOpts = (optsRaw, ov) => {
+    const dropSet = new Set(LABEL_POSITION_OPTIONS.map((p) => p.toLowerCase()));
+    const kept = String(optsRaw || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .filter((part) => {
+        const lc = part.toLowerCase();
+        if (dropSet.has(lc)) return false;
+        if (/^xshift\s*=/.test(lc)) return false;
+        if (/^yshift\s*=/.test(lc)) return false;
+        if (/^font\s*=/.test(lc)) return false;
+        return true;
+      });
+    return [ov.position, `xshift=${Number(ov.xshift.toFixed(2))}pt`, `yshift=${Number(ov.yshift.toFixed(2))}pt`, fontOpt, ...kept].join(', ');
+  };
+
+  const mapped = lines.map((ln) => {
+    const m = ln.match(pointLineRe);
+    if (m) {
+      const prefix = m[1];
+      const ref = m[2];
+      const middle = m[3];
+      const label = String(m[4] || '').trim();
+      const suffix = m[5];
+      const ov = normalizeLabelOverride(overrides[label], labelMaxShiftPt);
+      if (!ov) return ln;
+      const nodeOpts = `${ov.position}, xshift=${Number(ov.xshift.toFixed(2))}pt, yshift=${Number(ov.yshift.toFixed(2))}pt, ${fontOpt}`;
+      return `${prefix}${ref}${middle}node[${nodeOpts}] {$${label}$}${suffix}`;
+    }
+    const n = ln.match(nodeAtLineRe);
+    if (n) {
+      const prefix = n[1];
+      const optsRaw = String((n[2] || '').replace(/^\[|\]$/g, ''));
+      const atRef = n[3];
+      const label = String(n[4] || '').trim();
+      const suffix = n[5];
+      const ov = normalizeLabelOverride(overrides[label], labelMaxShiftPt);
+      if (!ov) return ln;
+      const nodeOpts = normalizeNodeOpts(optsRaw, ov);
+      return `${prefix}[${nodeOpts}] at ${atRef} {$${label}$}${suffix}`;
+    }
+    return ln;
+  });
+  return mapped.join('\n');
+}
+
 function intersectsBox(a, b) {
   return !(a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2);
 }
@@ -556,6 +924,12 @@ function intersectsBox(a, b) {
 function optimizePointLabels(out, coordMap, allPoints, options = {}) {
   const labelOffsetPt = Math.max(0, Math.min(8, Number(options.labelOffsetPt ?? 1)));
   const labelFontPt = Math.max(8, Math.min(20, Number(options.labelFontPt ?? 12)));
+  const labelMaxShiftPt = Number.isFinite(Number(options.labelMaxShiftPt))
+    ? Math.max(2, Math.min(50, Number(options.labelMaxShiftPt)))
+    : readLabelMaxShiftPt();
+  const labelOverrides = (options.labelOverrides && typeof options.labelOverrides === 'object')
+    ? options.labelOverrides
+    : {};
   const offsetCm = labelOffsetPt * 0.0353;
   const lines = String(out || '').split('\n');
   const assigned = [];
@@ -598,6 +972,13 @@ function optimizePointLabels(out, coordMap, allPoints, options = {}) {
     const suffix = m[5];
     const p = refToCoord(ref);
     if (!p) continue;
+    const forced = normalizeLabelOverride(labelOverrides[label], labelMaxShiftPt);
+    if (forced) {
+      const fontOpt = `font=\\fontsize{${labelFontPt}pt}{${Math.round(labelFontPt + 1)}pt}\\selectfont`;
+      const nodeOpts = `${forced.position}, xshift=${Number(forced.xshift.toFixed(2))}pt, yshift=${Number(forced.yshift.toFixed(2))}pt, ${fontOpt}`;
+      lines[i] = `${prefix}${ref}${middle}node[${nodeOpts}] {$${label}$}${suffix}`;
+      continue;
+    }
 
     const w = estimateLabelTextWidthCm(label, labelFontPt);
     const h = Math.max(0.16, 0.14 * (labelFontPt / 12));
@@ -644,7 +1025,16 @@ function optimizeTikzCodeRules(rawCode, prefs = {}) {
   const code = String(rawCode || '');
   if (!code.trim()) return code;
   const { points, coordMap } = collectNumericPointsFromTikz(code);
-  const b = computeOptimizedAxisBounds(points);
+  const axisPad = Math.max(0.1, Math.min(5, Number(prefs.axisPad ?? 0.5)));
+  const clipPad = Math.max(-3, Math.min(3, Number(prefs.clipPad ?? 0)));
+  const symmetryEnabled = !!prefs.axisSymmetryEnabled;
+  const symmetryMode = ['area', 'max_area', 'min_height', 'min_width'].includes(String(prefs.axisSymmetryMode || '').toLowerCase())
+    ? String(prefs.axisSymmetryMode).toLowerCase()
+    : 'area';
+  let b = computeOptimizedAxisBounds(points, axisPad);
+  if (symmetryEnabled) {
+    b = selectSymmetricAxisBounds(b, symmetryMode);
+  }
   const bboxW = Math.max(0.5, b.xmax - b.xmin);
   const bboxH = Math.max(0.5, b.ymax - b.ymin);
   const targetW = Math.max(4, Math.min(20, Number(prefs.targetWidthCm ?? 9)));
@@ -666,10 +1056,18 @@ function optimizeTikzCodeRules(rawCode, prefs = {}) {
     return `\\begin{tikzpicture}[scale=${scale}${cleaned ? `, ${cleaned}` : ''}]`;
   });
 
-  out = replaceAxisAndOrigin(out, b);
+  out = replaceAxisAndOrigin(out, b, {
+    showAxis: prefs.showAxis !== false,
+    axisThickness: prefs.axisThickness || 'semithick',
+    pointRadiusPt: Number.isFinite(Number(prefs.pointRadiusPt)) ? Number(prefs.pointRadiusPt) : undefined
+  });
+  out = replaceAutoClipBounds(out, b, clipPad);
+  out = alignFunctionDomainsToClip(out, b, clipPad);
   out = optimizePointLabels(out, coordMap, points, {
     labelOffsetPt: prefs.labelOffsetPt ?? 1,
-    labelFontPt: prefs.labelFontPt ?? 12
+    labelFontPt: prefs.labelFontPt ?? 12,
+    labelMaxShiftPt: prefs.labelMaxShiftPt ?? readLabelMaxShiftPt(),
+    labelOverrides: prefs.labelOverrides || {}
   });
   return out;
 }
@@ -759,6 +1157,7 @@ export default function NativeBoard({ onReadyChange }) {
 
   const hostRef = useRef(null);
   const tikzModalRef = useRef(null);
+  const tikzPreviewHostRef = useRef(null);
   const tikzDragStateRef = useRef({
     dragging: false,
     startX: 0,
@@ -779,10 +1178,19 @@ export default function NativeBoard({ onReadyChange }) {
   const [xmlLayerOpen, setXmlLayerOpen] = useState(false);
   const [tikzDebugOpen, setTikzDebugOpen] = useState(false);
   const [tikzDebugCode, setTikzDebugCode] = useState('');
-  const [tikzPreviewSrcDoc, setTikzPreviewSrcDoc] = useState('');
+  const [tikzPreviewContent, setTikzPreviewContent] = useState('');
   const [tikzPreviewSize, setTikzPreviewSize] = useState(null);
   const [tikzWindowPos, setTikzWindowPos] = useState(() => getCenteredTikzWindowPos());
   const [tikzPrefsOpen, setTikzPrefsOpen] = useState(false);
+  const [labelOverrides, setLabelOverrides] = useState(() => readLabelOverrides());
+  const [labelAdjustTarget, setLabelAdjustTarget] = useState('');
+  const [labelAdjustPos, setLabelAdjustPos] = useState('above right');
+  const [labelAdjustX, setLabelAdjustX] = useState('0');
+  const [labelAdjustY, setLabelAdjustY] = useState('0');
+  const [labelAdjustStep, setLabelAdjustStep] = useState('0.2');
+  const labelAdjustAutoTimerRef = useRef(null);
+  const nudgeHoldDelayRef = useRef(null);
+  const nudgeHoldIntervalRef = useRef(null);
   const [optTargetWcm, setOptTargetWcm] = useState(() => {
     const legacy = Number(localStorage.getItem(STORAGE_TIKZ_OPT_TARGET_CM) || 9);
     const v = Number(localStorage.getItem(STORAGE_TIKZ_OPT_TARGET_W_CM) || legacy);
@@ -797,6 +1205,19 @@ export default function NativeBoard({ onReadyChange }) {
     const v = String(localStorage.getItem(STORAGE_TIKZ_OPT_PRIORITY) || 'fit').trim().toLowerCase();
     return ['fit', 'width', 'height'].includes(v) ? v : 'fit';
   });
+  const [optAxisSymmetryEnabled, setOptAxisSymmetryEnabled] = useState(() => (localStorage.getItem(STORAGE_TIKZ_OPT_AXIS_SYMMETRY) || 'off') === 'on');
+  const [optAxisSymmetryMode, setOptAxisSymmetryMode] = useState(() => {
+    const v = String(localStorage.getItem(STORAGE_TIKZ_OPT_AXIS_SYMMETRY_MODE) || 'area').trim().toLowerCase();
+    return ['area', 'max_area', 'min_height', 'min_width'].includes(v) ? v : 'area';
+  });
+  const [optAxisPad, setOptAxisPad] = useState(() => {
+    const v = Number(localStorage.getItem(STORAGE_TIKZ_OPT_AXIS_PAD) || 0.5);
+    return Number.isFinite(v) ? Math.max(0.1, Math.min(5, v)) : 0.5;
+  });
+  const [optClipPad, setOptClipPad] = useState(() => {
+    const v = Number(localStorage.getItem(STORAGE_TIKZ_OPT_CLIP_PAD) || 0);
+    return Number.isFinite(v) ? Math.max(-3, Math.min(3, v)) : 0;
+  });
   const [optLabelOffsetPt, setOptLabelOffsetPt] = useState(() => {
     const v = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_OFFSET_PT) || 1);
     return Number.isFinite(v) ? Math.max(0, Math.min(8, v)) : 1;
@@ -805,16 +1226,45 @@ export default function NativeBoard({ onReadyChange }) {
     const v = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_FONT_PT) || 12);
     return Number.isFinite(v) ? Math.max(8, Math.min(20, v)) : 12;
   });
+  const [optLabelMaxShiftPt, setOptLabelMaxShiftPt] = useState(() => {
+    const v = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_MAX_SHIFT_PT) || 12);
+    return Number.isFinite(v) ? Math.max(2, Math.min(50, v)) : 12;
+  });
   const [optAngleRegion, setOptAngleRegion] = useState(() => {
     const v = String(localStorage.getItem(STORAGE_TIKZ_ANGLE_REGION) || 'auto').trim().toLowerCase();
     return ['auto', 'left', 'right', 'above', 'below'].includes(v) ? v : 'auto';
   });
+  const [tikzShowAxis, setTikzShowAxis] = useState(() => (localStorage.getItem(STORAGE_TIKZ_SHOW_AXIS) || 'on') === 'on');
+  const [tikzLineExtendCfg, setTikzLineExtendCfg] = useState(() => Number(localStorage.getItem(STORAGE_TIKZ_LINE_EXTEND) || 0.25));
+  const [tikzPointRadiusCfg, setTikzPointRadiusCfg] = useState(() => Number(localStorage.getItem(STORAGE_TIKZ_POINT_RADIUS) || 0.25));
+  const [tikzPolygonFillCfg, setTikzPolygonFillCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_POLYGON_FILL) || 'black');
+  const [tikzAxisThicknessCfg, setTikzAxisThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_AXIS_THICKNESS) || 'semithick');
+  const [tikzConicThicknessCfg, setTikzConicThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_CONIC_THICKNESS) || 'thick');
+  const [tikzFunctionThicknessCfg, setTikzFunctionThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_FUNCTION_THICKNESS) || 'thick');
+  const [tikzLineThicknessCfg, setTikzLineThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_LINE_THICKNESS) || 'semithick');
+  const [tikzSegmentThicknessCfg, setTikzSegmentThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_SEGMENT_THICKNESS) || 'thick');
+  const [tikzPolygonThicknessCfg, setTikzPolygonThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_POLYGON_THICKNESS) || 'thick');
   const [optDraftTargetWcm, setOptDraftTargetWcm] = useState(optTargetWcm);
   const [optDraftTargetHcm, setOptDraftTargetHcm] = useState(optTargetHcm);
   const [optDraftScalePriority, setOptDraftScalePriority] = useState(optScalePriority);
+  const [optDraftAxisSymmetryEnabled, setOptDraftAxisSymmetryEnabled] = useState(optAxisSymmetryEnabled);
+  const [optDraftAxisSymmetryMode, setOptDraftAxisSymmetryMode] = useState(optAxisSymmetryMode);
+  const [optDraftAxisPad, setOptDraftAxisPad] = useState(optAxisPad);
+  const [optDraftClipPad, setOptDraftClipPad] = useState(optClipPad);
   const [optDraftLabelOffsetPt, setOptDraftLabelOffsetPt] = useState(optLabelOffsetPt);
   const [optDraftLabelFontPt, setOptDraftLabelFontPt] = useState(optLabelFontPt);
+  const [optDraftLabelMaxShiftPt, setOptDraftLabelMaxShiftPt] = useState(optLabelMaxShiftPt);
   const [optDraftAngleRegion, setOptDraftAngleRegion] = useState(optAngleRegion);
+  const [optDraftShowAxis, setOptDraftShowAxis] = useState(tikzShowAxis);
+  const [optDraftLineExtend, setOptDraftLineExtend] = useState(tikzLineExtendCfg);
+  const [optDraftPointRadius, setOptDraftPointRadius] = useState(tikzPointRadiusCfg);
+  const [optDraftPolygonFill, setOptDraftPolygonFill] = useState(tikzPolygonFillCfg);
+  const [optDraftAxisThickness, setOptDraftAxisThickness] = useState(tikzAxisThicknessCfg);
+  const [optDraftConicThickness, setOptDraftConicThickness] = useState(tikzConicThicknessCfg);
+  const [optDraftFunctionThickness, setOptDraftFunctionThickness] = useState(tikzFunctionThicknessCfg);
+  const [optDraftLineThickness, setOptDraftLineThickness] = useState(tikzLineThicknessCfg);
+  const [optDraftSegmentThickness, setOptDraftSegmentThickness] = useState(tikzSegmentThicknessCfg);
+  const [optDraftPolygonThickness, setOptDraftPolygonThickness] = useState(tikzPolygonThicknessCfg);
 
   useEffect(() => {
     if (!actionStatus) return;
@@ -876,7 +1326,7 @@ export default function NativeBoard({ onReadyChange }) {
     };
   }, [onReadyChange]);
 
-  const buildTikzFromBoard = () => {
+  const buildTikzFromBoard = (optOverrides = {}) => {
     if (!(nativeApi && typeof nativeApi.getXML === 'function' && window.GGBParser && window.TikZGenerator)) {
       throw new Error('当前环境未就绪：缺少原生画板或解析器');
     }
@@ -887,9 +1337,8 @@ export default function NativeBoard({ onReadyChange }) {
     const tikzCfg = readTikzSettings();
     const generator = new window.TikZGenerator({
       outputMode: 'figure',
-      axis: true,
+      axis: tikzCfg.showAxis,
       grid: false,
-      tikzScale: tikzCfg.tikzScale,
       defaultStrokeColor: 'black',
       defaultStrokeThickness: 'thick',
       defaultPointColor: 'black',
@@ -899,6 +1348,7 @@ export default function NativeBoard({ onReadyChange }) {
       polygonFillColor: tikzCfg.polygonFillColor,
       axisThickness: tikzCfg.axisThickness,
       conicStrokeThickness: tikzCfg.conicThickness,
+      functionStrokeThickness: tikzCfg.functionThickness,
       lineStrokeThickness: tikzCfg.lineThickness,
       segmentStrokeThickness: tikzCfg.segmentThickness,
       polygonStrokeThickness: tikzCfg.polygonThickness,
@@ -909,14 +1359,42 @@ export default function NativeBoard({ onReadyChange }) {
       ymax: bounds.ymax
     });
     const rawCode = generator.generate(parsed);
+    const optPrefs = {
+      targetWidthCm: Number.isFinite(Number(optOverrides.targetWidthCm))
+        ? Number(optOverrides.targetWidthCm)
+        : optTargetWcm,
+      targetHeightCm: Number.isFinite(Number(optOverrides.targetHeightCm))
+        ? Number(optOverrides.targetHeightCm)
+        : optTargetHcm,
+      scalePriority: optOverrides.scalePriority || optScalePriority,
+      axisSymmetryEnabled: typeof optOverrides.axisSymmetryEnabled === 'boolean'
+        ? optOverrides.axisSymmetryEnabled
+        : optAxisSymmetryEnabled,
+      axisSymmetryMode: optOverrides.axisSymmetryMode || optAxisSymmetryMode,
+      axisPad: Number.isFinite(Number(optOverrides.axisPad))
+        ? Number(optOverrides.axisPad)
+        : optAxisPad,
+      clipPad: Number.isFinite(Number(optOverrides.clipPad))
+        ? Number(optOverrides.clipPad)
+        : optClipPad,
+      labelOverrides,
+      labelOffsetPt: Number.isFinite(Number(optOverrides.labelOffsetPt))
+        ? Number(optOverrides.labelOffsetPt)
+        : optLabelOffsetPt,
+      labelFontPt: Number.isFinite(Number(optOverrides.labelFontPt))
+        ? Number(optOverrides.labelFontPt)
+        : optLabelFontPt,
+      labelMaxShiftPt: Number.isFinite(Number(optOverrides.labelMaxShiftPt))
+        ? Number(optOverrides.labelMaxShiftPt)
+        : optLabelMaxShiftPt,
+      showAxis: typeof optOverrides.showAxis === 'boolean' ? optOverrides.showAxis : tikzCfg.showAxis,
+      axisThickness: optOverrides.axisThickness || tikzCfg.axisThickness,
+      pointRadiusPt: Number.isFinite(Number(optOverrides.pointRadiusPt))
+        ? Number(optOverrides.pointRadiusPt)
+        : tikzCfg.pointRadiusPt
+    };
     // 转译阶段默认执行规则优化（坐标轴/scale/标签）
-    return optimizeTikzCodeRules(rawCode, {
-      targetWidthCm: optTargetWcm,
-      targetHeightCm: optTargetHcm,
-      scalePriority: optScalePriority,
-      labelOffsetPt: optLabelOffsetPt,
-      labelFontPt: optLabelFontPt
-    });
+    return optimizeTikzCodeRules(rawCode, optPrefs);
   };
 
   const compileTikzPreview = (code) => {
@@ -925,7 +1403,7 @@ export default function NativeBoard({ onReadyChange }) {
       setActionStatus('TikZ 调试区为空');
       return;
     }
-    setTikzPreviewSrcDoc(buildTikzPreviewHtml(text));
+    setTikzPreviewContent(buildTikzPreviewContent(text));
     setTikzPreviewSize(estimateTikzSizeCm(text));
   };
 
@@ -933,13 +1411,138 @@ export default function NativeBoard({ onReadyChange }) {
     setActionStatus('AI优化功能待接入，当前已默认执行规则转译优化');
   };
 
+  const syncLabelAdjustFromCode = (code, targetLabel) => {
+    const label = String(targetLabel || '').trim();
+    if (!label) return;
+    const fromOverride = normalizeLabelOverride(labelOverrides[label], optLabelMaxShiftPt);
+    if (fromOverride) {
+      setLabelAdjustPos(fromOverride.position);
+      setLabelAdjustX(String(fromOverride.xshift));
+      setLabelAdjustY(String(fromOverride.yshift));
+      return;
+    }
+    const map = extractAdjustableLabelOptionsMap(code);
+    const fromCode = normalizeLabelOverride(map[label], optLabelMaxShiftPt);
+    if (fromCode) {
+      setLabelAdjustPos(fromCode.position);
+      setLabelAdjustX(String(fromCode.xshift));
+      setLabelAdjustY(String(fromCode.yshift));
+      return;
+    }
+    setLabelAdjustPos('above right');
+    setLabelAdjustX('0');
+    setLabelAdjustY('0');
+  };
+
+  const applyLabelAdjustToCode = ({ silent = false } = {}) => {
+    const label = String(labelAdjustTarget || '').trim();
+    if (!label) {
+      if (!silent) setActionStatus('请先选择要微调的标签');
+      return;
+    }
+    const ov = normalizeLabelOverride({
+      position: labelAdjustPos,
+      xshift: Number(labelAdjustX),
+      yshift: Number(labelAdjustY)
+    }, optLabelMaxShiftPt);
+    if (!ov) {
+      if (!silent) setActionStatus('标签参数无效');
+      return;
+    }
+    const nextCode = applyLabelOverridesToTikzCode(tikzDebugCode, { [label]: ov }, optLabelFontPt, optLabelMaxShiftPt);
+    setTikzDebugCode(nextCode);
+    compileTikzPreview(nextCode);
+    if (!silent) setActionStatus(`已自动应用标签 ${label} 的微调`);
+  };
+
+  const nudgeLabelAdjust = (dx, dy) => {
+    if (dx === 0 && dy === 0) {
+      setLabelAdjustX('0');
+      setLabelAdjustY('0');
+      return;
+    }
+    const step = Number(labelAdjustStep);
+    const unit = Number.isFinite(step) ? Math.max(0.2, Math.min(2, step)) : 0.2;
+    const rangeMax = Number.isFinite(Number(optLabelMaxShiftPt))
+      ? Math.max(2, Math.min(50, Number(optLabelMaxShiftPt)))
+      : 12;
+    const unitDecimals = String(unit).includes('.') ? String(unit).split('.')[1].length : 0;
+    const nextByStep = (prev, delta) => {
+      const base = Number(prev);
+      const safeBase = Number.isFinite(base) ? base : 0;
+      const stepped = Math.round((safeBase + delta * unit) / unit) * unit;
+      const clamped = Math.max(-rangeMax, Math.min(rangeMax, stepped));
+      return String(Number(clamped.toFixed(Math.max(1, unitDecimals))));
+    };
+    setLabelAdjustX((prev) => nextByStep(prev, dx));
+    setLabelAdjustY((prev) => nextByStep(prev, dy));
+  };
+
+  const stopContinuousNudge = () => {
+    if (nudgeHoldDelayRef.current) {
+      clearTimeout(nudgeHoldDelayRef.current);
+      nudgeHoldDelayRef.current = null;
+    }
+    if (nudgeHoldIntervalRef.current) {
+      clearInterval(nudgeHoldIntervalRef.current);
+      nudgeHoldIntervalRef.current = null;
+    }
+  };
+
+  const startContinuousNudge = (dx, dy, event) => {
+    event?.preventDefault?.();
+    stopContinuousNudge();
+    nudgeLabelAdjust(dx, dy);
+    nudgeHoldDelayRef.current = setTimeout(() => {
+      nudgeHoldIntervalRef.current = setInterval(() => {
+        nudgeLabelAdjust(dx, dy);
+      }, 70);
+    }, 260);
+  };
+
+  const resetCurrentLabelAdjust = () => {
+    const label = String(labelAdjustTarget || '').trim();
+    if (!label) {
+      setActionStatus('请先选择要重置的标签');
+      return;
+    }
+    const nextMap = { ...(labelOverrides || {}) };
+    delete nextMap[label];
+    writeLabelOverrides(nextMap);
+    setLabelOverrides(nextMap);
+    setLabelAdjustPos('above right');
+    setLabelAdjustX('0');
+    setLabelAdjustY('0');
+    const nextCode = applyLabelOverridesToTikzCode(tikzDebugCode, {
+      [label]: { position: 'above right', xshift: 0, yshift: 0 }
+    }, optLabelFontPt, optLabelMaxShiftPt);
+    setTikzDebugCode(nextCode);
+    compileTikzPreview(nextCode);
+    setActionStatus(`已重置标签 ${label} 的微调`);
+  };
+
   const openTikzPrefs = () => {
     setOptDraftTargetWcm(optTargetWcm);
     setOptDraftTargetHcm(optTargetHcm);
     setOptDraftScalePriority(optScalePriority);
+    setOptDraftAxisSymmetryEnabled(optAxisSymmetryEnabled);
+    setOptDraftAxisSymmetryMode(optAxisSymmetryMode);
+    setOptDraftAxisPad(optAxisPad);
+    setOptDraftClipPad(optClipPad);
     setOptDraftLabelOffsetPt(optLabelOffsetPt);
     setOptDraftLabelFontPt(optLabelFontPt);
+    setOptDraftLabelMaxShiftPt(optLabelMaxShiftPt);
     setOptDraftAngleRegion(optAngleRegion);
+    setOptDraftShowAxis(tikzShowAxis);
+    setOptDraftLineExtend(tikzLineExtendCfg);
+    setOptDraftPointRadius(tikzPointRadiusCfg);
+    setOptDraftPolygonFill(tikzPolygonFillCfg);
+    setOptDraftAxisThickness(tikzAxisThicknessCfg);
+    setOptDraftConicThickness(tikzConicThicknessCfg);
+    setOptDraftFunctionThickness(tikzFunctionThicknessCfg);
+    setOptDraftLineThickness(tikzLineThicknessCfg);
+    setOptDraftSegmentThickness(tikzSegmentThicknessCfg);
+    setOptDraftPolygonThickness(tikzPolygonThicknessCfg);
     setTikzPrefsOpen(true);
   };
 
@@ -949,26 +1552,133 @@ export default function NativeBoard({ onReadyChange }) {
     const priority = ['fit', 'width', 'height'].includes(String(optDraftScalePriority || '').toLowerCase())
       ? String(optDraftScalePriority).toLowerCase()
       : 'fit';
+    const axisSymmetryEnabled = !!optDraftAxisSymmetryEnabled;
+    const axisSymmetryMode = ['area', 'max_area', 'min_height', 'min_width'].includes(String(optDraftAxisSymmetryMode || '').toLowerCase())
+      ? String(optDraftAxisSymmetryMode).toLowerCase()
+      : 'area';
+    const axisPad = Math.max(0.1, Math.min(5, Number(optDraftAxisPad) || 0.5));
+    const clipPad = Math.max(-3, Math.min(3, Number(optDraftClipPad) || 0));
     const labelOffsetPt = Math.max(0, Math.min(8, Number(optDraftLabelOffsetPt) || 1));
     const labelFontPt = Math.max(8, Math.min(20, Number(optDraftLabelFontPt) || 12));
+    const labelMaxShiftPt = Math.max(2, Math.min(50, Number(optDraftLabelMaxShiftPt) || 12));
     const region = ['auto', 'left', 'right', 'above', 'below'].includes(optDraftAngleRegion)
       ? optDraftAngleRegion
       : 'auto';
+    const showAxis = !!optDraftShowAxis;
+    const lineExtendRaw = Number(optDraftLineExtend);
+    const lineExtend = Number.isFinite(lineExtendRaw)
+      ? Math.max(0, Math.min(6, lineExtendRaw))
+      : 0.25;
+    const pointRadiusPt = Math.max(0.05, Math.min(3, Number(optDraftPointRadius) || 0.25));
+    const polygonFillColor = String(optDraftPolygonFill || 'black').trim() || 'black';
+    const axisThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftAxisThickness || '').trim())
+      ? String(optDraftAxisThickness).trim()
+      : 'semithick';
+    const conicThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftConicThickness || '').trim())
+      ? String(optDraftConicThickness).trim()
+      : 'thick';
+    const functionThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftFunctionThickness || '').trim())
+      ? String(optDraftFunctionThickness).trim()
+      : 'thick';
+    const lineThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftLineThickness || '').trim())
+      ? String(optDraftLineThickness).trim()
+      : 'semithick';
+    const segmentThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftSegmentThickness || '').trim())
+      ? String(optDraftSegmentThickness).trim()
+      : 'thick';
+    const polygonThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftPolygonThickness || '').trim())
+      ? String(optDraftPolygonThickness).trim()
+      : 'thick';
     setOptTargetWcm(targetW);
     setOptTargetHcm(targetH);
     setOptScalePriority(priority);
+    setOptAxisSymmetryEnabled(axisSymmetryEnabled);
+    setOptAxisSymmetryMode(axisSymmetryMode);
+    setOptAxisPad(axisPad);
+    setOptClipPad(clipPad);
     setOptLabelOffsetPt(labelOffsetPt);
     setOptLabelFontPt(labelFontPt);
+    setOptLabelMaxShiftPt(labelMaxShiftPt);
     setOptAngleRegion(region);
+    setTikzShowAxis(showAxis);
+    setTikzLineExtendCfg(lineExtend);
+    setTikzPointRadiusCfg(pointRadiusPt);
+    setTikzPolygonFillCfg(polygonFillColor);
+    setTikzAxisThicknessCfg(axisThickness);
+    setTikzConicThicknessCfg(conicThickness);
+    setTikzFunctionThicknessCfg(functionThickness);
+    setTikzLineThicknessCfg(lineThickness);
+    setTikzSegmentThicknessCfg(segmentThickness);
+    setTikzPolygonThicknessCfg(polygonThickness);
     localStorage.setItem(STORAGE_TIKZ_OPT_TARGET_W_CM, String(targetW));
     localStorage.setItem(STORAGE_TIKZ_OPT_TARGET_H_CM, String(targetH));
     localStorage.setItem(STORAGE_TIKZ_OPT_PRIORITY, priority);
+    localStorage.setItem(STORAGE_TIKZ_OPT_AXIS_SYMMETRY, axisSymmetryEnabled ? 'on' : 'off');
+    localStorage.setItem(STORAGE_TIKZ_OPT_AXIS_SYMMETRY_MODE, axisSymmetryMode);
+    localStorage.setItem(STORAGE_TIKZ_OPT_AXIS_PAD, String(axisPad));
+    localStorage.setItem(STORAGE_TIKZ_OPT_CLIP_PAD, String(clipPad));
     localStorage.setItem(STORAGE_TIKZ_OPT_LABEL_OFFSET_PT, String(labelOffsetPt));
     localStorage.setItem(STORAGE_TIKZ_OPT_LABEL_FONT_PT, String(labelFontPt));
+    localStorage.setItem(STORAGE_TIKZ_OPT_LABEL_MAX_SHIFT_PT, String(labelMaxShiftPt));
     localStorage.setItem(STORAGE_TIKZ_OPT_TARGET_CM, String(Math.max(targetW, targetH)));
     localStorage.setItem(STORAGE_TIKZ_ANGLE_REGION, region);
+    localStorage.setItem(STORAGE_TIKZ_SHOW_AXIS, showAxis ? 'on' : 'off');
+    localStorage.setItem(STORAGE_TIKZ_LINE_EXTEND, String(lineExtend));
+    localStorage.setItem(STORAGE_TIKZ_POINT_RADIUS, String(pointRadiusPt));
+    localStorage.setItem(STORAGE_TIKZ_POLYGON_FILL, polygonFillColor);
+    localStorage.setItem(STORAGE_TIKZ_AXIS_THICKNESS, axisThickness);
+    localStorage.setItem(STORAGE_TIKZ_CONIC_THICKNESS, conicThickness);
+    localStorage.setItem(STORAGE_TIKZ_FUNCTION_THICKNESS, functionThickness);
+    localStorage.setItem(STORAGE_TIKZ_LINE_THICKNESS, lineThickness);
+    localStorage.setItem(STORAGE_TIKZ_SEGMENT_THICKNESS, segmentThickness);
+    localStorage.setItem(STORAGE_TIKZ_POLYGON_THICKNESS, polygonThickness);
+    if (tikzDebugOpen) {
+      try {
+        let refreshed = '';
+        const currentCode = String(tikzDebugCode || '').trim();
+        const optPayload = {
+          targetWidthCm: targetW,
+          targetHeightCm: targetH,
+          scalePriority: priority,
+          axisSymmetryEnabled,
+          axisSymmetryMode,
+          axisPad,
+          clipPad,
+          labelOffsetPt,
+          labelFontPt,
+          labelMaxShiftPt,
+          showAxis,
+          axisThickness
+        };
+        // 优先对“当前调试器代码”应用偏好，避免覆盖用户手工微调与补充内容。
+        if (currentCode) {
+          const labelFromCode = extractAdjustableLabelOptionsMap(currentCode);
+          refreshed = optimizeTikzCodeRules(currentCode, {
+            ...optPayload,
+            labelOverrides: { ...(labelOverrides || {}), ...labelFromCode }
+          });
+        } else if (nativeApi && typeof nativeApi.getXML === 'function' && window.GGBParser && window.TikZGenerator) {
+          refreshed = buildTikzFromBoard(optPayload);
+        } else {
+          const legacy = getLegacyWindow();
+          if (legacy && typeof legacy.buildTikZFromBoard === 'function') {
+            refreshed = String(legacy.buildTikZFromBoard() || '');
+          }
+        }
+        if (String(refreshed || '').trim()) {
+          setTikzDebugCode(refreshed);
+          compileTikzPreview(refreshed);
+          setActionStatus('转译偏好已应用到当前调试代码');
+        } else {
+          setActionStatus('转译偏好已应用');
+        }
+      } catch (e) {
+        setActionStatus(`转译偏好已应用，但刷新失败：${e.message}`);
+      }
+    } else {
+      setActionStatus('转译偏好已应用');
+    }
     setTikzPrefsOpen(false);
-    setActionStatus('转译偏好已应用');
   };
 
   const openTikzDebugger = () => {
@@ -1041,6 +1751,63 @@ export default function NativeBoard({ onReadyChange }) {
       window.removeEventListener('pointerup', onUp);
     };
   }, [tikzDebugOpen, tikzWindowPos.x, tikzWindowPos.y]);
+
+  const debugPointLabels = extractAdjustableLabelsFromTikz(tikzDebugCode);
+
+  useEffect(() => {
+    if (!tikzDebugOpen) return;
+    if (debugPointLabels.length === 0) {
+      if (labelAdjustTarget) setLabelAdjustTarget('');
+      return;
+    }
+    if (!debugPointLabels.includes(labelAdjustTarget)) {
+      const next = debugPointLabels[0];
+      setLabelAdjustTarget(next);
+      syncLabelAdjustFromCode(tikzDebugCode, next);
+    }
+  }, [tikzDebugOpen, tikzDebugCode, labelAdjustTarget, debugPointLabels]);
+
+  useEffect(() => {
+    if (!tikzDebugOpen) return;
+    const label = String(labelAdjustTarget || '').trim();
+    if (!label) return;
+    syncLabelAdjustFromCode(tikzDebugCode, label);
+  }, [tikzDebugOpen, labelAdjustTarget, optLabelMaxShiftPt]);
+
+  useEffect(() => {
+    if (!tikzDebugOpen) return;
+    if (!String(labelAdjustTarget || '').trim()) return;
+    const ov = normalizeLabelOverride({
+      position: labelAdjustPos,
+      xshift: Number(labelAdjustX),
+      yshift: Number(labelAdjustY)
+    }, optLabelMaxShiftPt);
+    if (!ov) return;
+    if (labelAdjustAutoTimerRef.current) {
+      clearTimeout(labelAdjustAutoTimerRef.current);
+    }
+    labelAdjustAutoTimerRef.current = setTimeout(() => {
+      applyLabelAdjustToCode({ silent: true });
+    }, 160);
+    return () => {
+      if (labelAdjustAutoTimerRef.current) {
+        clearTimeout(labelAdjustAutoTimerRef.current);
+        labelAdjustAutoTimerRef.current = null;
+      }
+    };
+  }, [tikzDebugOpen, labelAdjustTarget, labelAdjustPos, labelAdjustX, labelAdjustY, optLabelMaxShiftPt]);
+
+  useEffect(() => {
+    if (!tikzDebugOpen) return undefined;
+    const stop = () => stopContinuousNudge();
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    return () => {
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      stopContinuousNudge();
+    };
+  }, [tikzDebugOpen]);
 
   const exportTikz = async () => {
     try {
@@ -1249,6 +2016,31 @@ export default function NativeBoard({ onReadyChange }) {
       setActionStatus(`下载 XML 失败：${e.message}`);
     }
   };
+  useEffect(() => {
+    const host = tikzPreviewHostRef.current;
+    if (!host) return;
+    host.innerHTML = '';
+
+    const content = String(tikzPreviewContent || '').trim();
+    if (!content) return;
+
+    const tikzScript = document.createElement('script');
+    tikzScript.type = 'text/tikz';
+    tikzScript.text = content;
+    host.appendChild(tikzScript);
+    let cancelled = false;
+    ensureTikzJaxReady()
+      .then((render) => {
+        if (cancelled) return;
+        return render();
+      })
+      .catch((e) => {
+        if (!cancelled) setActionStatus(`TikZ 预览失败：${e.message}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tikzPreviewContent]);
 
   return (
     <section className="panel panel-right">
@@ -1410,7 +2202,7 @@ export default function NativeBoard({ onReadyChange }) {
                   placeholder="在这里粘贴或编辑 TikZ 代码"
                 />
               </div>
-              <div className="tikz-debug-pane">
+              <div className="tikz-debug-pane tikz-debug-pane-preview">
                 <div className="tikz-debug-title">编译预览</div>
                 <div className="tikz-size-hint">
                   {tikzPreviewSize
@@ -1418,11 +2210,100 @@ export default function NativeBoard({ onReadyChange }) {
                     : '图形估算尺寸：暂不可计算（代码中缺少足够的数值坐标）'}
                 </div>
                 <div className="tikz-debug-preview-wrap">
-                  <iframe
-                    className="tikz-debug-preview"
-                    title="TikZ 调试预览"
-                    srcDoc={tikzPreviewSrcDoc}
-                  />
+                  <div className="tikz-debug-preview-canvas" ref={tikzPreviewHostRef} />
+                </div>
+                <div className="tikz-preview-hint">
+                  若预览为空，通常是 TikZ 代码超出 TikZJax 支持范围，可直接复制到本地 LaTeX 编译。
+                </div>
+                <div className="settings-section" style={{ marginTop: 10 }}>
+                  <h4>标签微调（半自动）</h4>
+                  <div className="tikz-label-tune-grid">
+                    <label className="tikz-label-tune-field">
+                      <span>标签</span>
+                      <select
+                        className="tikz-label-tune-select"
+                        value={labelAdjustTarget}
+                        onChange={(e) => {
+                          const v = String(e.target.value || '');
+                          setLabelAdjustTarget(v);
+                          syncLabelAdjustFromCode(tikzDebugCode, v);
+                        }}
+                      >
+                        {debugPointLabels.length === 0 ? <option value="">当前无可调标签</option> : null}
+                        {debugPointLabels.map((lab) => (
+                          <option key={lab} value={lab}>{lab}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="tikz-label-adjust-row">
+                    <div className="tikz-label-tune-field">
+                      <span>方向微调</span>
+                      <div className="tikz-nudge-pad">
+                        {LABEL_NUDGE_DIRECTIONS.flat().map((item, idx) => (
+                          <button
+                            key={`nudge-${idx}-${item.icon}`}
+                            type="button"
+                            className={`tikz-nudge-btn ${item.dx === 0 && item.dy === 0 ? 'is-center' : ''}`}
+                            title={item.title}
+                            aria-label={item.title}
+                            onPointerDown={(e) => startContinuousNudge(item.dx, item.dy, e)}
+                            onPointerLeave={stopContinuousNudge}
+                          >
+                            {item.icon}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="tikz-label-tune-field">
+                      <span>微调设置</span>
+                      <div className="tikz-label-step-controls">
+                        <label className="tikz-inline-field">
+                          <span>步长（pt）</span>
+                          <select
+                            className="tikz-label-tune-select"
+                            value={labelAdjustStep}
+                            onChange={(e) => setLabelAdjustStep(String(e.target.value || '0.2'))}
+                          >
+                            <option value="0.2">0.2</option>
+                            <option value="0.5">0.5</option>
+                            <option value="1">1</option>
+                            <option value="2">2</option>
+                          </select>
+                        </label>
+                        <div className="tikz-label-readout">
+                          <label className="tikz-inline-field">
+                            <span>右移（pt）</span>
+                            <input
+                              className="tikz-label-tune-input"
+                              type="number"
+                              min={-optLabelMaxShiftPt}
+                              max={optLabelMaxShiftPt}
+                              step={labelAdjustStep}
+                              value={labelAdjustX}
+                              onChange={(e) => setLabelAdjustX(e.target.value)}
+                            />
+                          </label>
+                          <label className="tikz-inline-field">
+                            <span>上移（pt）</span>
+                            <input
+                              className="tikz-label-tune-input"
+                              type="number"
+                              min={-optLabelMaxShiftPt}
+                              max={optLabelMaxShiftPt}
+                              step={labelAdjustStep}
+                              value={labelAdjustY}
+                              onChange={(e) => setLabelAdjustY(e.target.value)}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="tikz-label-tune-tip">提示：方向键支持长按连续移动；负数表示反向移动。</div>
+                  <div className="actions-row gap" style={{ marginTop: 8 }}>
+                    <button className="btn btn-lite" onClick={resetCurrentLabelAdjust}>重置当前点</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1470,6 +2351,50 @@ export default function NativeBoard({ onReadyChange }) {
                         <option value="height">height（优先高度）</option>
                       </select>
                     </label>
+                    <label>
+                      坐标轴对称优化
+                      <select
+                        value={optDraftAxisSymmetryEnabled ? 'on' : 'off'}
+                        onChange={(e) => setOptDraftAxisSymmetryEnabled(e.target.value === 'on')}
+                      >
+                        <option value="off">关闭（保持现有逻辑）</option>
+                        <option value="on">开启</option>
+                      </select>
+                    </label>
+                    <label>
+                      对称优化目标
+                      <select
+                        value={optDraftAxisSymmetryMode}
+                        onChange={(e) => setOptDraftAxisSymmetryMode(String(e.target.value || 'area'))}
+                      >
+                        <option value="area">整体面积最小优先</option>
+                        <option value="max_area">整体面积最大优先</option>
+                        <option value="min_height">坐标范围上下对称</option>
+                        <option value="min_width">坐标范围左右对称</option>
+                      </select>
+                    </label>
+                    <label>
+                      坐标轴延伸（单位）
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="5"
+                        step="0.1"
+                        value={optDraftAxisPad}
+                        onChange={(e) => setOptDraftAxisPad(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      scope 裁剪偏移（单位）
+                      <input
+                        type="number"
+                        min="-3"
+                        max="3"
+                        step="0.1"
+                        value={optDraftClipPad}
+                        onChange={(e) => setOptDraftClipPad(e.target.value)}
+                      />
+                    </label>
                   </div>
                 </div>
                 <div className="settings-section">
@@ -1498,6 +2423,17 @@ export default function NativeBoard({ onReadyChange }) {
                       />
                     </label>
                     <label>
+                      标签微调范围（pt）
+                      <input
+                        type="number"
+                        min="2"
+                        max="50"
+                        step="1"
+                        value={optDraftLabelMaxShiftPt}
+                        onChange={(e) => setOptDraftLabelMaxShiftPt(e.target.value)}
+                      />
+                    </label>
+                    <label>
                       两直线角度区域
                       <select
                         value={optDraftAngleRegion}
@@ -1508,6 +2444,117 @@ export default function NativeBoard({ onReadyChange }) {
                         <option value="right">right</option>
                         <option value="above">above</option>
                         <option value="below">below</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div className="settings-section">
+                  <h4>TikZ 导出样式</h4>
+                  <div className="settings-grid">
+                    <label>
+                      是否显示坐标轴
+                      <select
+                        value={optDraftShowAxis ? 'on' : 'off'}
+                        onChange={(e) => setOptDraftShowAxis(e.target.value === 'on')}
+                      >
+                        <option value="on">显示</option>
+                        <option value="off">隐藏</option>
+                      </select>
+                    </label>
+                    <label>
+                      直线/射线延伸参数
+                      <input
+                        type="number"
+                        min="0"
+                        max="6"
+                        step="0.05"
+                        value={optDraftLineExtend}
+                        onChange={(e) => setOptDraftLineExtend(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      点半径（pt）
+                      <input
+                        type="number"
+                        min="0.05"
+                        max="3"
+                        step="0.05"
+                        value={optDraftPointRadius}
+                        onChange={(e) => setOptDraftPointRadius(e.target.value)}
+                      />
+                    </label>
+                    <label>
+                      多边形填充颜色
+                      <input
+                        value={optDraftPolygonFill}
+                        onChange={(e) => setOptDraftPolygonFill(e.target.value)}
+                        placeholder="例如 black / blue!20 / none"
+                      />
+                    </label>
+                    <label>
+                      坐标轴线宽
+                      <select
+                        value={optDraftAxisThickness}
+                        onChange={(e) => setOptDraftAxisThickness(String(e.target.value || 'semithick'))}
+                      >
+                        {TIKZ_THICKNESS_OPTIONS.map((it) => (
+                          <option key={it} value={it}>{it}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      圆锥曲线线宽
+                      <select
+                        value={optDraftConicThickness}
+                        onChange={(e) => setOptDraftConicThickness(String(e.target.value || 'thick'))}
+                      >
+                        {TIKZ_THICKNESS_OPTIONS.map((it) => (
+                          <option key={it} value={it}>{it}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      函数线宽
+                      <select
+                        value={optDraftFunctionThickness}
+                        onChange={(e) => setOptDraftFunctionThickness(String(e.target.value || 'thick'))}
+                      >
+                        {TIKZ_THICKNESS_OPTIONS.map((it) => (
+                          <option key={it} value={it}>{it}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      直线/射线线宽
+                      <select
+                        value={optDraftLineThickness}
+                        onChange={(e) => setOptDraftLineThickness(String(e.target.value || 'semithick'))}
+                      >
+                        {TIKZ_THICKNESS_OPTIONS.map((it) => (
+                          <option key={it} value={it}>{it}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      线段线宽
+                      <select
+                        value={optDraftSegmentThickness}
+                        onChange={(e) => setOptDraftSegmentThickness(String(e.target.value || 'thick'))}
+                      >
+                        {TIKZ_THICKNESS_OPTIONS.map((it) => (
+                          <option key={it} value={it}>{it}</option>
+                        ))}
+                      </select>
+                    </label>
+                    <label>
+                      多边形边线线宽
+                      <select
+                        value={optDraftPolygonThickness}
+                        onChange={(e) => setOptDraftPolygonThickness(String(e.target.value || 'thick'))}
+                      >
+                        {TIKZ_THICKNESS_OPTIONS.map((it) => (
+                          <option key={it} value={it}>{it}</option>
+                        ))}
                       </select>
                     </label>
                   </div>

@@ -1271,6 +1271,10 @@ body {
   overflow: hidden;
 }
 
+.tikz-debug-pane-preview {
+  overflow-y: auto;
+}
+
 .tikz-debug-title {
   padding: 8px 10px;
   border-bottom: 1px solid #dcece4;
@@ -1295,24 +1299,36 @@ body {
 }
 
 .tikz-debug-preview-wrap {
-  flex: 1;
-  min-height: 0;
-  display: grid;
-  align-items: start;
-  justify-items: center;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   padding: 12px;
   overflow: auto;
   background: #f5faf7;
 }
 
-.tikz-debug-preview {
-  width: min(100%, 840px);
-  aspect-ratio: 1 / 1.4142;
-  height: auto;
+.tikz-debug-preview-canvas {
+  width: min(100%, 920px);
   border: 1px solid #d3e5dc;
   border-radius: 8px;
   background: #ffffff;
+  padding: 12px;
   box-shadow: 0 8px 20px rgba(20, 66, 49, 0.08);
+}
+
+.tikz-debug-preview-canvas svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+}
+
+.tikz-debug-preview-canvas,
+.tikz-debug-preview-canvas svg,
+.tikz-debug-preview-canvas svg text,
+.tikz-debug-preview-canvas svg tspan {
+  font-family: "Latin Modern Roman", "CMU Serif", "Computer Modern Serif", "STIX Two Text", "Noto Serif", serif !important;
 }
 
 .tikz-size-hint {
@@ -1321,6 +1337,164 @@ body {
   font-size: 12px;
   color: #496b5d;
   background: #f7fcf9;
+}
+
+.tikz-preview-hint {
+  padding: 8px 12px 0;
+  font-size: 12px;
+  color: #5f6f88;
+}
+
+.tikz-label-tune-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px 12px;
+}
+
+.tikz-label-tune-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #2a5e49;
+}
+
+.tikz-label-tune-select,
+.tikz-label-tune-input {
+  height: 38px;
+  border: 1px solid #cbe5d8;
+  border-radius: 10px;
+  padding: 0 12px;
+  font-size: 14px;
+  background: #f8fdf9;
+  color: #1f2a3d;
+  outline: none;
+}
+
+.tikz-label-tune-select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 34px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #4f8a72 50%),
+    linear-gradient(135deg, #4f8a72 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 1px),
+    calc(100% - 13px) calc(50% - 1px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+}
+
+.tikz-label-tune-select:focus,
+.tikz-label-tune-input:focus {
+  border-color: #1ca170;
+  box-shadow: 0 0 0 2px rgba(28, 161, 112, 0.14);
+}
+
+.tikz-label-adjust-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  margin-top: 8px;
+}
+
+.tikz-label-step-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tikz-inline-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #2a5e49;
+}
+
+.tikz-label-readout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.tikz-nudge-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 42px);
+  gap: 6px;
+}
+
+.tikz-nudge-btn {
+  width: 42px;
+  height: 36px;
+  border: 1px solid #bfe3d2;
+  border-radius: 10px;
+  background: #f3fbf7;
+  color: #2b6a52;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.tikz-nudge-btn:hover {
+  background: #e9f7f0;
+  border-color: #8fd4b7;
+}
+
+.tikz-nudge-btn:active {
+  transform: translateY(1px);
+}
+
+.tikz-nudge-btn.is-center {
+  background: #e6f6ee;
+  color: #1f7f5d;
+  font-size: 14px;
+}
+
+.tikz-label-pos-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tikz-label-pos-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.tikz-pos-chip {
+  height: 34px;
+  border: 1px solid #bfe3d2;
+  border-radius: 10px;
+  background: #f3fbf7;
+  color: #2b6a52;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.tikz-pos-chip:hover {
+  background: #e9f7f0;
+  border-color: #8fd4b7;
+}
+
+.tikz-pos-chip.active {
+  background: #1ca170;
+  color: #fff;
+  border-color: #1ca170;
+  box-shadow: 0 4px 10px rgba(28, 161, 112, 0.2);
+}
+
+.tikz-label-tune-tip {
+  margin-top: 8px;
+  font-size: 12px;
+  color: #5c7d6f;
 }
 
 .link {
@@ -1401,8 +1575,20 @@ body {
     grid-template-columns: 1fr;
   }
 
+  .tikz-label-tune-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .tikz-label-adjust-row {
+    grid-template-columns: 1fr;
+  }
+
+  .tikz-label-readout {
+    grid-template-columns: 1fr;
+  }
+
   .tikz-debug-editor,
-  .tikz-debug-preview {
+  .tikz-debug-preview-canvas {
     min-height: 0;
   }
 
@@ -1412,7 +1598,7 @@ body {
     max-height: calc(100vh - 12px);
   }
 
-  .tikz-debug-preview {
+  .tikz-debug-preview-canvas {
     width: min(100%, 620px);
   }
 }
