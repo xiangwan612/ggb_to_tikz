@@ -23,6 +23,7 @@ class TikZGenerator {
             defaultPointColor: options.defaultPointColor || 'black',
             axisThickness: options.axisThickness || 'semithick',
             conicStrokeThickness: options.conicStrokeThickness || '',
+            functionStrokeThickness: options.functionStrokeThickness || '',
             lineStrokeThickness: options.lineStrokeThickness || '',
             segmentStrokeThickness: options.segmentStrokeThickness || '',
             polygonStrokeThickness: options.polygonStrokeThickness || '',
@@ -89,6 +90,7 @@ class TikZGenerator {
     resolveCategoryThickness(kind, obj) {
         if (kind === 'axis' && this.options.axisThickness) return this.options.axisThickness;
         if (kind === 'conic' && this.options.conicStrokeThickness) return this.options.conicStrokeThickness;
+        if (kind === 'function' && this.options.functionStrokeThickness) return this.options.functionStrokeThickness;
         if (kind === 'line' && this.options.lineStrokeThickness) return this.options.lineStrokeThickness;
         if (kind === 'segment' && this.options.segmentStrokeThickness) return this.options.segmentStrokeThickness;
         if (kind === 'polygon' && this.options.polygonStrokeThickness) return this.options.polygonStrokeThickness;
@@ -173,6 +175,22 @@ class TikZGenerator {
             ymin: this.options.ymin,
             ymax: this.options.ymax
         };
+    }
+
+    /**
+     * 使用当前坐标轴边界包裹 clip，避免曲线超出画幅
+     */
+    wrapWithBoundsClip(content, note = '') {
+        const body = String(content || '').trim();
+        if (!body) return '';
+        const { xmin, xmax, ymin, ymax } = this.getBounds();
+        const lines = [];
+        lines.push('\\begin{scope}');
+        if (note) lines.push(`% ${note}`);
+        lines.push(`\\clip (${xmin},${ymin}) rectangle (${xmax},${ymax});`);
+        lines.push(body);
+        lines.push('\\end{scope}');
+        return `${lines.join('\n')}\n`;
     }
 
     computeSmartBounds(parsedData) {
@@ -345,7 +363,6 @@ class TikZGenerator {
             code += `    % 坐标轴
     \\draw[->, ${axisThickness}] (${xmin},0) -- (${xmax},0) node[right] {$x$};
     \\draw[->, ${axisThickness}] (0,${ymin}) -- (0,${ymax}) node[above] {$y$};
-    \\node at (-0.18,-0.18) {$O$};
 `;
         }
         return code;
@@ -355,8 +372,9 @@ class TikZGenerator {
      * 生成函数
      */
     generateFunctions(functions) {
-        const { xmin, xmax } = this.getBounds();
+        const { xmin, xmax, ymin, ymax } = this.getBounds();
         let code = '% 函数\n';
+        let clippedPlots = '';
         
         functions.forEach(f => {
             if (!f.visible || !f.exp) return;
@@ -372,9 +390,9 @@ class TikZGenerator {
             const expr = this.convertExpression(rawExpr);
             
             const color = this.resolveStrokeColor(f, 'black');
-            const thickness = this.resolveStrokeThickness(f);
+            const thickness = this.resolveCategoryThickness('function', f);
             const lineStyle = this.composeLineStyle(thickness, f);
-            const domains = this.splitFunctionDomains(rawExpr, xmin, xmax);
+            const domains = this.splitFunctionDomains(rawExpr, xmin, xmax, ymin, ymax);
 
             if (domains.length === 0) {
                 code += `% 函数 ${f.label || ''}: 未找到可绘制区间\n`;
@@ -382,16 +400,104 @@ class TikZGenerator {
             }
 
             domains.forEach((d) => {
-                code += `\\draw[${color}, ${lineStyle}, smooth, domain=${d.start}:${d.end}, samples=100] plot (\\x,{${expr}});\n`;
+                clippedPlots += `\\draw[${color}, ${lineStyle}, smooth, domain=${d.start}:${d.end}, samples=100] plot (\\x,{${expr}});\n`;
             });
         });
-        
+
+        if (clippedPlots.trim()) {
+            code += this.wrapWithBoundsClip(clippedPlots, '按坐标轴边界裁剪函数');
+        }
         return code;
+    }
+
+    convertEulerPowerToExp(expr) {
+        const src = String(expr ?? '');
+        const isWord = (ch) => /[A-Za-z0-9_\\]/.test(ch || '');
+        const parseGrouped = (s, start) => {
+            const open = s[start];
+            const close = open === '(' ? ')' : (open === '{' ? '}' : '');
+            if (!close) return null;
+            let depth = 0;
+            for (let i = start; i < s.length; i++) {
+                const ch = s[i];
+                if (ch === open) depth++;
+                else if (ch === close) {
+                    depth--;
+                    if (depth === 0) {
+                        return { inner: s.slice(start + 1, i), end: i + 1 };
+                    }
+                }
+            }
+            return null;
+        };
+
+        let out = '';
+        let i = 0;
+        while (i < src.length) {
+            const ch = src[i];
+            const isEuler = ch === 'ℯ' || ch === 'e';
+            if (!isEuler) {
+                out += ch;
+                i++;
+                continue;
+            }
+
+            const prev = i > 0 ? src[i - 1] : '';
+            if (ch === 'e' && isWord(prev)) {
+                out += ch;
+                i++;
+                continue;
+            }
+
+            let j = i + 1;
+            while (j < src.length && /\s/.test(src[j])) j++;
+            if (src[j] !== '^') {
+                out += (ch === 'ℯ' ? 'e' : ch);
+                i++;
+                continue;
+            }
+
+            j++;
+            while (j < src.length && /\s/.test(src[j])) j++;
+            let sign = '';
+            if (src[j] === '+' || src[j] === '-') {
+                sign = src[j];
+                j++;
+                while (j < src.length && /\s/.test(src[j])) j++;
+            }
+
+            let inner = '';
+            let end = -1;
+            if (src[j] === '(' || src[j] === '{') {
+                const grouped = parseGrouped(src, j);
+                if (grouped) {
+                    inner = grouped.inner;
+                    end = grouped.end;
+                }
+            } else {
+                let k = j;
+                while (k < src.length && !/[,\s+\-*/^)\]}]/.test(src[k])) k++;
+                if (k > j) {
+                    inner = src.slice(j, k);
+                    end = k;
+                }
+            }
+
+            if (end > -1) {
+                out += `exp(${sign}${inner})`;
+                i = end;
+                continue;
+            }
+
+            out += (ch === 'ℯ' ? 'e' : ch);
+            i++;
+        }
+        return out;
     }
 
     toJsExpression(expr) {
         if (typeof expr !== 'string') return null;
-        let js = expr.trim();
+        let js = this.convertEulerPowerToExp(expr).trim();
         if (!js) return null;
         js = js
             .replace(/\^/g, '**')
@@ -424,10 +530,30 @@ class TikZGenerator {
         }
     }
 
-    splitFunctionDomains(expr, xmin, xmax, samples = 240) {
+    hasPotentialDiscontinuity(expr) {
+        const s = String(expr || '').toLowerCase();
+        if (!s) return false;
+        // 这些函数常见定义域/间断风险，保留分段逻辑
+        if (/\b(tan|cot|sec|csc|ln|log|sqrt|asin|acos)\s*\(/i.test(s)) return true;
+        // 含除法时通常也应保守处理，避免跨越极点连线
+        if (s.includes('/')) return true;
+        return false;
+    }
+
+    splitFunctionDomains(expr, xmin, xmax, ymin = null, ymax = null, samples = 240) {
         const x0 = Number(xmin);
         const x1 = Number(xmax);
         if (!Number.isFinite(x0) || !Number.isFinite(x1) || x1 <= x0) return [];
+        const conservative = this.hasPotentialDiscontinuity(expr);
+        // 默认策略：有 clip 时函数直接整段绘制，避免被“畏手畏脚”地切碎。
+        if (!conservative) {
+            return [{ start: Number(x0.toFixed(2)), end: Number(x1.toFixed(2)) }];
+        }
+        const y0 = Number(ymin);
+        const y1 = Number(ymax);
+        const useYLimit = Number.isFinite(y0) && Number.isFinite(y1) && y1 > y0;
+        const yMin = useYLimit ? y0 : -Infinity;
+        const yMax = useYLimit ? y1 : Infinity;
 
         const evalFn = this.buildExprEvaluator(expr);
         // 若表达式无法 JS 评估，回退旧行为，保持可用性
@@ -446,7 +572,7 @@ class TikZGenerator {
             let ok = false;
             try {
                 const y = evalFn(x);
-                ok = Number.isFinite(y);
+                ok = Number.isFinite(y) && y >= yMin && y <= yMax;
             } catch {
                 ok = false;
             }
@@ -487,11 +613,67 @@ class TikZGenerator {
             }));
     }
 
+    isPointInBounds(x, y, eps = 1e-9) {
+        const { xmin, xmax, ymin, ymax } = this.getBounds();
+        return Number.isFinite(x) && Number.isFinite(y)
+            && x >= xmin - eps && x <= xmax + eps
+            && y >= ymin - eps && y <= ymax + eps;
+    }
+
+    findVisibleParamSegments(evalXY, tMin, tMax, samples = 360) {
+        const a = Number(tMin);
+        const b = Number(tMax);
+        if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a || typeof evalXY !== 'function') return [];
+
+        const step = (b - a) / samples;
+        const minSpan = Math.max(step * 1.5, (b - a) * 0.01);
+        const segments = [];
+        let runStart = null;
+        let prevT = a;
+
+        for (let i = 0; i <= samples; i++) {
+            const t = a + step * i;
+            let ok = false;
+            try {
+                const p = evalXY(t);
+                if (p && this.isPointInBounds(Number(p.x), Number(p.y), 1e-6)) ok = true;
+            } catch {
+                ok = false;
+            }
+            if (ok) {
+                if (runStart === null) runStart = t;
+            } else if (runStart !== null) {
+                const end = prevT;
+                if (end - runStart >= minSpan) {
+                    segments.push({
+                        start: Number(runStart.toFixed(2)),
+                        end: Number(end.toFixed(2))
+                    });
+                }
+                runStart = null;
+            }
+            prevT = t;
+        }
+
+        if (runStart !== null) {
+            const end = b;
+            if (end - runStart >= minSpan) {
+                segments.push({
+                    start: Number(runStart.toFixed(2)),
+                    end: Number(end.toFixed(2))
+                });
+            }
+        }
+
+        return segments.filter(s => Number.isFinite(s.start) && Number.isFinite(s.end) && s.end > s.start);
+    }
+
     /**
      * 生成圆锥曲线
      */
     generateConics(conics) {
         let code = '% 圆锥曲线\n';
+        let clippedPlots = '';
         
         conics.forEach(c => {
             if (!c.visible) return;
@@ -508,14 +690,17 @@ class TikZGenerator {
                     code += this.generateEllipse(c, color, lineStyle);
                     break;
                 case 'parabola':
-                    code += this.generateParabola(c, color, lineStyle);
+                    clippedPlots += this.generateParabola(c, color, lineStyle);
                     break;
                 case 'hyperbola':
-                    code += this.generateHyperbola(c, color, lineStyle);
+                    clippedPlots += this.generateHyperbola(c, color, lineStyle);
                     break;
             }
         });
-        
+
+        if (clippedPlots.trim()) {
+            code += this.wrapWithBoundsClip(clippedPlots, '按坐标轴边界裁剪抛物线/双曲线');
+        }
         return code;
     }
 
@@ -780,9 +965,23 @@ class TikZGenerator {
             const byMatrix = this.parabolaFromMatrix(c.matrix);
             if (byMatrix) {
                 if (byMatrix.mode === 'x_of_y') {
-                    return `\\draw[${color}, ${thickness}, samples=120, domain=${ymin}:${ymax}, variable=\\t] plot ({${byMatrix.a.toFixed(6)}*\\t*\\t + ${byMatrix.b.toFixed(6)}*\\t + ${byMatrix.c.toFixed(6)}}, {\\t});${c.label ? ` % ${c.label}` : ''}\n`;
+                    const segs = this.findVisibleParamSegments((t) => ({
+                        x: byMatrix.a * t * t + byMatrix.b * t + byMatrix.c,
+                        y: t
+                    }), ymin, ymax, 320);
+                    const domains = segs.length ? segs : [{ start: Number(ymin.toFixed(2)), end: Number(ymax.toFixed(2)) }];
+                    return domains.map((d, idx) =>
+                        `\\draw[${color}, ${thickness}, samples=120, domain=${d.start}:${d.end}, variable=\\t] plot ({${byMatrix.a.toFixed(6)}*\\t*\\t + ${byMatrix.b.toFixed(6)}*\\t + ${byMatrix.c.toFixed(6)}}, {\\t});${c.label && idx === domains.length - 1 ? ` % ${c.label}` : ''}`
+                    ).join('\n') + '\n';
                 }
-                return `\\draw[${color}, ${thickness}, samples=120, domain=${xmin}:${xmax}, variable=\\t] plot ({\\t}, {${byMatrix.a.toFixed(6)}*\\t*\\t + ${byMatrix.b.toFixed(6)}*\\t + ${byMatrix.c.toFixed(6)}});${c.label ? ` % ${c.label}` : ''}\n`;
+                const segs = this.findVisibleParamSegments((t) => ({
+                    x: t,
+                    y: byMatrix.a * t * t + byMatrix.b * t + byMatrix.c
+                }), xmin, xmax, 320);
+                const domains = segs.length ? segs : [{ start: Number(xmin.toFixed(2)), end: Number(xmax.toFixed(2)) }];
+                return domains.map((d, idx) =>
+                    `\\draw[${color}, ${thickness}, samples=120, domain=${d.start}:${d.end}, variable=\\t] plot ({\\t}, {${byMatrix.a.toFixed(6)}*\\t*\\t + ${byMatrix.b.toFixed(6)}*\\t + ${byMatrix.c.toFixed(6)}});${c.label && idx === domains.length - 1 ? ` % ${c.label}` : ''}`
+                ).join('\n') + '\n';
             }
             return `% 抛物线 ${c.label}: 缺少焦点\n`;
         }
@@ -803,14 +1002,30 @@ class TikZGenerator {
                     const p = Math.abs(fx - vx);  // 焦距
                     const direction = fx > vx ? 1 : -1;
                     
-                    return `\\draw[${color}, ${thickness}, samples=100, domain=${ymin}:${ymax}, variable=\\y] plot ({${vx.toFixed(2)} + ${(direction * p).toFixed(2)}*(\\y/2)^2}, {\\y}); % 抛物线 ${c.label}\n`;
+                    const coeff = direction * p;
+                    const segs = this.findVisibleParamSegments((yy) => ({
+                        x: vx + coeff * (yy / 2) * (yy / 2),
+                        y: yy
+                    }), ymin, ymax, 320);
+                    const domains = segs.length ? segs : [{ start: Number(ymin.toFixed(2)), end: Number(ymax.toFixed(2)) }];
+                    return domains.map((d, idx) =>
+                        `\\draw[${color}, ${thickness}, samples=100, domain=${d.start}:${d.end}, variable=\\y] plot ({${vx.toFixed(2)} + ${coeff.toFixed(2)}*(\\y/2)^2}, {\\y});${c.label && idx === domains.length - 1 ? ` % 抛物线 ${c.label}` : ''}`
+                    ).join('\n') + '\n';
                 } else {
                     // 准线是 y = 常数，抛物线开口向上或下
                     const vy = (fy + value) / 2;
                     const p = Math.abs(fy - vy);
                     const direction = fy > vy ? 1 : -1;
                     
-                    return `\\draw[${color}, ${thickness}, samples=100, domain=${xmin}:${xmax}] plot (\\x,{${vy.toFixed(2)} + ${(direction * p).toFixed(2)}*(\\x/2)^2}); % 抛物线 ${c.label}\n`;
+                    const coeff = direction * p;
+                    const segs = this.findVisibleParamSegments((xx) => ({
+                        x: xx,
+                        y: vy + coeff * (xx / 2) * (xx / 2)
+                    }), xmin, xmax, 320);
+                    const domains = segs.length ? segs : [{ start: Number(xmin.toFixed(2)), end: Number(xmax.toFixed(2)) }];
+                    return domains.map((d, idx) =>
+                        `\\draw[${color}, ${thickness}, samples=100, domain=${d.start}:${d.end}] plot (\\x,{${vy.toFixed(2)} + ${coeff.toFixed(2)}*(\\x/2)^2});${c.label && idx === domains.length - 1 ? ` % 抛物线 ${c.label}` : ''}`
+                    ).join('\n') + '\n';
                 }
             }
         }
@@ -836,11 +1051,35 @@ class TikZGenerator {
                 if (byMatrix.mainAxis === 'u') {
                     const uExpr = `${signExpr}${a.toFixed(6)}*cosh(\\t)`;
                     const vExpr = `${b.toFixed(6)}*sinh(\\t)`;
-                    return `\\draw[${color}, ${thickness}, samples=140, variable=\\t, domain=-2:2] plot ({${h.toFixed(6)} + (${uExpr})*${cosT.toFixed(6)} - (${vExpr})*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (${uExpr})*${sinT.toFixed(6)} + (${vExpr})*${cosT.toFixed(6)}});\n`;
+                    const sign = signExpr === '-' ? -1 : 1;
+                    const segs = this.findVisibleParamSegments((t) => {
+                        const u = sign * a * Math.cosh(t);
+                        const v = b * Math.sinh(t);
+                        return {
+                            x: h + u * cosT - v * sinT,
+                            y: k + u * sinT + v * cosT
+                        };
+                    }, -4, 4, 420);
+                    const domains = segs.length ? segs : [{ start: -2, end: 2 }];
+                    return domains.map((d) =>
+                        `\\draw[${color}, ${thickness}, samples=140, variable=\\t, domain=${d.start}:${d.end}] plot ({${h.toFixed(6)} + (${uExpr})*${cosT.toFixed(6)} - (${vExpr})*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (${uExpr})*${sinT.toFixed(6)} + (${vExpr})*${cosT.toFixed(6)}});`
+                    ).join('\n') + '\n';
                 }
                 const uExpr = `${b.toFixed(6)}*sinh(\\t)`;
                 const vExpr = `${signExpr}${a.toFixed(6)}*cosh(\\t)`;
-                return `\\draw[${color}, ${thickness}, samples=140, variable=\\t, domain=-2:2] plot ({${h.toFixed(6)} + (${uExpr})*${cosT.toFixed(6)} - (${vExpr})*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (${uExpr})*${sinT.toFixed(6)} + (${vExpr})*${cosT.toFixed(6)}});\n`;
+                const sign = signExpr === '-' ? -1 : 1;
+                const segs = this.findVisibleParamSegments((t) => {
+                    const u = b * Math.sinh(t);
+                    const v = sign * a * Math.cosh(t);
+                    return {
+                        x: h + u * cosT - v * sinT,
+                        y: k + u * sinT + v * cosT
+                    };
+                }, -4, 4, 420);
+                const domains = segs.length ? segs : [{ start: -2, end: 2 }];
+                return domains.map((d) =>
+                    `\\draw[${color}, ${thickness}, samples=140, variable=\\t, domain=${d.start}:${d.end}] plot ({${h.toFixed(6)} + (${uExpr})*${cosT.toFixed(6)} - (${vExpr})*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (${uExpr})*${sinT.toFixed(6)} + (${vExpr})*${cosT.toFixed(6)}});`
+                ).join('\n') + '\n';
             };
 
             return `${drawBranch('')}${drawBranch('-')}${c.label ? `% ${c.label}\n` : ''}`;
@@ -858,8 +1097,23 @@ class TikZGenerator {
             const b = Math.sqrt(Math.max(cdist * cdist - a * a, 0.2));
             const cosT = Math.cos(theta);
             const sinT = Math.sin(theta);
-            return `\\draw[${color}, ${thickness}, samples=120, variable=\\t, domain=-2:2] plot ({${h.toFixed(6)} + (${a.toFixed(6)}*cosh(\\t))*${cosT.toFixed(6)} - (${b.toFixed(6)}*sinh(\\t))*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (${a.toFixed(6)}*cosh(\\t))*${sinT.toFixed(6)} + (${b.toFixed(6)}*sinh(\\t))*${cosT.toFixed(6)}});
-\\draw[${color}, ${thickness}, samples=120, variable=\\t, domain=-2:2] plot ({${h.toFixed(6)} + (-${a.toFixed(6)}*cosh(\\t))*${cosT.toFixed(6)} - (${b.toFixed(6)}*sinh(\\t))*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (-${a.toFixed(6)}*cosh(\\t))*${sinT.toFixed(6)} + (${b.toFixed(6)}*sinh(\\t))*${cosT.toFixed(6)}});${c.label ? ` % ${c.label}` : ''}\n`;
+            const drawApproxBranch = (sign) => {
+                const segs = this.findVisibleParamSegments((t) => {
+                    const u = sign * a * Math.cosh(t);
+                    const v = b * Math.sinh(t);
+                    return {
+                        x: h + u * cosT - v * sinT,
+                        y: k + u * sinT + v * cosT
+                    };
+                }, -4, 4, 420);
+                const domains = segs.length ? segs : [{ start: -2, end: 2 }];
+                const aSign = sign < 0 ? `-${a.toFixed(6)}` : `${a.toFixed(6)}`;
+                return domains.map((d) =>
+                    `\\draw[${color}, ${thickness}, samples=120, variable=\\t, domain=${d.start}:${d.end}] plot ({${h.toFixed(6)} + (${aSign}*cosh(\\t))*${cosT.toFixed(6)} - (${b.toFixed(6)}*sinh(\\t))*${sinT.toFixed(6)}}, {${k.toFixed(6)} + (${aSign}*cosh(\\t))*${sinT.toFixed(6)} + (${b.toFixed(6)}*sinh(\\t))*${cosT.toFixed(6)}});`
+                ).join('\n');
+            };
+            return `${drawApproxBranch(1)}
+${drawApproxBranch(-1)}${c.label ? ` % ${c.label}` : ''}\n`;
         }
         
         return `% 双曲线 ${c.label}: 参数不完整\n`;
@@ -1821,9 +2075,11 @@ class TikZGenerator {
      */
     generatePoints(points) {
         let code = '% 点\n';
+        let hasLabelO = false;
         
         points.forEach(p => {
             if (!p.visible) return;
+            if (String(p.label || '').trim() === 'O') hasLabelO = true;
             
             const color = this.resolvePointColor(p);
             const size = p.pointSize || 2;
@@ -1840,6 +2096,14 @@ class TikZGenerator {
             
             code += `;\n`;
         });
+
+        // 仅在显示坐标轴时自动补一个原点标签点，便于和普通点一样微调标签位置
+        if (this.options.axis && !hasLabelO) {
+            const radiusPt = Number.isFinite(Number(this.options.pointRadiusPt))
+                ? Number(this.options.pointRadiusPt)
+                : 0.25;
+            code += `\\fill[black] (0.00,0.00) circle[radius=${radiusPt}pt] node[above right, xshift=0pt, yshift=0pt] {$O$}; % axis-origin\n`;
+        }
         
         return code;
     }
@@ -1926,7 +2190,7 @@ class TikZGenerator {
     }
 
     convertExpression(expr) {
-        const converted = expr
+        const converted = this.convertEulerPowerToExp(expr)
             // GeoGebra 常见写法：x^(2) -> (x)^2，避免在 trig 参数中歧义
             .replace(/\bx\^\(([^()]+)\)/g, '(x)^$1')
             .replace(/\bx\b/g, '\\x')
