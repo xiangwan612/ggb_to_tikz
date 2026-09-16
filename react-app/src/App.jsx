@@ -2,24 +2,24 @@ import CommandPanel from './components/CommandPanel';
 import NativeBoard from './components/NativeBoard';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-const BASE_URL = import.meta.env.BASE_URL || '/';
 const STORAGE_SPLIT = 'ggb_split_left_percent';
+const STORAGE_BOARD_TYPE = 'ggb_board_type';
 const MIN_LEFT = 38;
 const MAX_LEFT = 78;
 
 export default function App() {
   const [ggbApi, setGgbApi] = useState(null);
   const [ggbReady, setGgbReady] = useState(false);
+  const [boardType, setBoardType] = useState(() => {
+    const raw = String(localStorage.getItem(STORAGE_BOARD_TYPE) || '2d').trim().toLowerCase();
+    return raw === '3d' ? '3d' : '2d';
+  });
   const [leftPercent, setLeftPercent] = useState(() => {
     const raw = Number(localStorage.getItem(STORAGE_SPLIT));
     if (Number.isFinite(raw) && raw >= MIN_LEFT && raw <= MAX_LEFT) return raw;
     return 62;
   });
   const shellRef = useRef(null);
-
-  const openLegacy = () => {
-    window.open(`${BASE_URL}legacy-index.html`, '_blank', 'noopener,noreferrer');
-  };
 
   const handleBoardReadyChange = useCallback((api, ready) => {
     setGgbApi(api || null);
@@ -29,6 +29,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem(STORAGE_SPLIT, String(leftPercent));
   }, [leftPercent]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_BOARD_TYPE, boardType);
+  }, [boardType]);
 
   const startResize = (event) => {
     event.preventDefault();
@@ -54,7 +58,7 @@ export default function App() {
   return (
     <div className="app-shell" ref={shellRef}>
       <div className="split-pane split-left" style={{ width: `${leftPercent}%` }}>
-        <CommandPanel ggbApi={ggbApi} ggbReady={ggbReady} onOpenLegacy={openLegacy} />
+        <CommandPanel ggbApi={ggbApi} ggbReady={ggbReady} boardType={boardType} />
       </div>
       <div
         className="split-divider"
@@ -64,7 +68,11 @@ export default function App() {
         aria-orientation="vertical"
       />
       <div className="split-pane split-right">
-        <NativeBoard onReadyChange={handleBoardReadyChange} />
+        <NativeBoard
+          onReadyChange={handleBoardReadyChange}
+          boardType={boardType}
+          onBoardTypeChange={setBoardType}
+        />
       </div>
     </div>
   );

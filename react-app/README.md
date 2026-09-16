@@ -13,6 +13,5 @@ npm run dev
 ## Current State
 
 - React shell is ready.
-- Legacy app is embedded at `/legacy-index.html` for uninterrupted use.
 - Incremental migration is tracked in `docs/migration-plan.md`.
 - BYOK deployment checklist is in `docs/byok-checklist.md`.

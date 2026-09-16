@@ -1,145 +1,361 @@
-export function normalizeArkInputContent(messageContent) {
-  if (Array.isArray(messageContent)) {
-    return messageContent
-      .map((part) => {
-        if (!part || typeof part !== 'object') return null;
-        if (part.type === 'text') {
-          const text = String(part.text || '').trim();
-          return text ? { type: 'input_text', text } : null;
-        }
-        if (part.type === 'image_url') {
-          const url = typeof part.image_url === 'string' ? part.image_url : part.image_url?.url;
-          return url ? { type: 'input_image', image_url: url } : null;
-        }
-        return null;
-      })
-      .filter(Boolean);
-  }
-  const text = String(messageContent || '').trim();
-  return text ? [{ type: 'input_text', text }] : [];
+const STORAGE_CLIENT_ID = 'ggb_client_id';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+
+function makeApiUrl(path) {
+  const p = String(path || '').startsWith('/') ? path : `/${path}`;
+  return `${API_BASE}${p}`;
 }
 
-export function buildCompletionRequests(providerKey, apiBase, model, messages, temperature = 0.3, maxTokens = 2000) {
-  if (providerKey === 'doubao') {
-    const safeMessages = Array.isArray(messages) ? messages : [];
-    const instructions = safeMessages
-      .filter((msg) => msg && msg.role === 'system')
-      .map((msg) => (typeof msg.content === 'string' ? msg.content.trim() : ''))
-      .filter(Boolean)
-      .join('\n\n');
-
-    const input = safeMessages
-      .filter((msg) => msg && msg.role !== 'system')
-      .map((msg) => ({
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: normalizeArkInputContent(msg.content)
-      }))
-      .filter((msg) => Array.isArray(msg.content) && msg.content.length > 0);
-
-    return [
-      {
-        label: 'responses',
-        url: `${apiBase}/responses`,
-        body: {
-          model,
-          input,
-          temperature,
-          max_output_tokens: maxTokens,
-          ...(instructions ? { instructions } : {})
-        }
-      },
-      {
-        label: 'chat_completions_fallback',
-        url: `${apiBase}/chat/completions`,
-        body: {
-          model,
-          messages: safeMessages,
-          temperature,
-          max_tokens: maxTokens
-        }
-      }
-    ];
+function getClientId() {
+  try {
+    const old = localStorage.getItem(STORAGE_CLIENT_ID);
+    if (old) return old;
+    const next = `web_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(STORAGE_CLIENT_ID, next);
+    return next;
+  } catch {
+    return `web_${Date.now()}`;
   }
-
-  return [
-    {
-      label: 'chat_completions',
-      url: `${apiBase}/chat/completions`,
-      body: {
-        model,
-        messages,
-        temperature,
-        max_tokens: maxTokens
-      }
-    }
-  ];
 }
 
-export function extractAssistantText(providerKey, data) {
-  if (providerKey === 'doubao') {
-    if (typeof data?.output_text === 'string' && data.output_text.trim()) {
-      return data.output_text.trim();
-    }
-    if (Array.isArray(data?.output)) {
-      const texts = [];
-      data.output.forEach((item) => {
-        if (!item) return;
-        if (Array.isArray(item.content)) {
-          item.content.forEach((part) => {
-            const t = part?.text || part?.output_text || '';
-            if (typeof t === 'string' && t.trim()) texts.push(t.trim());
-          });
-        } else if (typeof item.text === 'string' && item.text.trim()) {
-          texts.push(item.text.trim());
-        }
-      });
-      if (texts.length > 0) return texts.join('\n');
-    }
+function buildHeaders(authToken = '') {
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-client-id': getClientId()
+  };
+  const token = String(authToken || '').trim();
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
-
-  const text = data?.choices?.[0]?.message?.content;
-  if (typeof text === 'string' && text.trim()) {
-    return text.trim();
-  }
-  throw new Error('未能从响应中解析出模型输出');
+  return headers;
 }
 
-export async function requestWithFallback({ providerKey, apiBase, apiKey, model, messages }) {
-  const requests = buildCompletionRequests(providerKey, apiBase, model, messages, 0.3, 2000);
-  const errors = [];
+async function requestJson({ path, method = 'POST', payload, authToken = '' }) {
+  const hasBody = payload !== undefined;
+  const response = await fetch(makeApiUrl(path), {
+    method,
+    headers: buildHeaders(authToken),
+    body: hasBody ? JSON.stringify(payload || {}) : undefined
+  });
+  const rawText = await response.text();
+  let data = {};
+  try {
+    data = rawText ? JSON.parse(rawText) : {};
+  } catch {
+    data = {};
+  }
+  if (!response.ok) {
+    const err = new Error(data?.message || rawText || `HTTP ${response.status}`);
+    err.code = data?.code || 'API_ERROR';
+    err.status = response.status;
+    err.quota = data?.quota || null;
+    err.waitSec = Number(data?.waitSec || 0);
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
 
-  for (const req of requests) {
-    const response = await fetch(req.url, {
+export async function fetchModelsViaServer({ providerKey, apiBase, apiKey, modelsEndpoint, authToken }) {
+  return requestJson({
+    path: '/api/models',
+    method: 'POST',
+    authToken,
+    payload: {
+      providerKey,
+      apiBase,
+      userApiKey: apiKey || '',
+      modelsEndpoint: modelsEndpoint || '/models'
+    }
+  });
+}
+
+export async function requestWithFallback({ providerKey, apiBase, apiKey, model, messages, authToken }) {
+  const data = await requestJson({
+    path: '/api/chat',
+    method: 'POST',
+    authToken,
+    payload: {
+      providerKey,
+      apiBase,
+      userApiKey: apiKey || '',
+      model,
+      messages
+    }
+  });
+  return {
+    content: data?.content || '',
+    via: data?.via || 'proxy',
+    source: data?.source || 'user',
+    quota: data?.quota || null,
+    raw: data
+  };
+}
+
+function toAbortError() {
+  const err = new Error('请求已停止');
+  err.code = 'ABORT_ERR';
+  err.name = 'AbortError';
+  err.status = 499;
+  return err;
+}
+
+function parseNdjsonLine(line, onEvent) {
+  const text = String(line || '').trim();
+  if (!text) return null;
+  let event = null;
+  try {
+    event = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (typeof onEvent === 'function') {
+    onEvent(event);
+  }
+  return event;
+}
+
+export async function requestWithFallbackStream({
+  providerKey,
+  apiBase,
+  apiKey,
+  model,
+  messages,
+  authToken,
+  signal,
+  onEvent
+}) {
+  let response;
+  try {
+    response = await fetch(makeApiUrl('/api/chat/stream'), {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify(req.body)
+      headers: buildHeaders(authToken),
+      body: JSON.stringify({
+        providerKey,
+        apiBase,
+        userApiKey: apiKey || '',
+        model,
+        messages
+      }),
+      signal
     });
+  } catch (error) {
+    if (error?.name === 'AbortError') throw toAbortError();
+    throw error;
+  }
 
-    const raw = await response.text();
+  if (!response.ok) {
+    if (response.status === 404) {
+      return requestWithFallback({ providerKey, apiBase, apiKey, model, messages, authToken });
+    }
+    const rawText = await response.text();
     let data = {};
     try {
-      data = raw ? JSON.parse(raw) : {};
+      data = rawText ? JSON.parse(rawText) : {};
     } catch {
       data = {};
     }
+    const err = new Error(data?.message || rawText || `HTTP ${response.status}`);
+    err.code = data?.code || 'API_ERROR';
+    err.status = response.status;
+    err.quota = data?.quota || null;
+    err.waitSec = Number(data?.waitSec || 0);
+    err.data = data;
+    throw err;
+  }
 
-    if (!response.ok) {
-      const msg = data?.error?.message || data?.message || raw || `HTTP ${response.status}`;
-      errors.push(`${req.label}: ${msg}`);
-      continue;
+  const result = {
+    content: '',
+    via: 'proxy',
+    source: 'user',
+    quota: null,
+    raw: null
+  };
+
+  const handleEvent = (event) => {
+    if (!event) return null;
+    if (event.type === 'meta') {
+      if (event.via) result.via = String(event.via);
+      if (event.source) result.source = String(event.source);
+      if (event.quota) result.quota = event.quota;
+      return null;
     }
+    if (event.type === 'delta') {
+      result.content += String(event.text || '');
+      return null;
+    }
+    if (event.type === 'done') {
+      result.content = String(event.content || result.content || '');
+      result.via = String(event.via || result.via || 'proxy');
+      result.source = String(event.source || result.source || 'user');
+      result.quota = event.quota || result.quota || null;
+      result.raw = event;
+      return result;
+    }
+    if (event.type === 'error') {
+      const err = new Error(event.message || '流式请求失败');
+      err.code = event.code || 'UPSTREAM_CHAT_FAILED';
+      err.status = 502;
+      err.quota = event.quota || null;
+      throw err;
+    }
+    return null;
+  };
 
+  const reader = response.body?.getReader();
+  if (!reader) {
+    const rawText = await response.text();
+    const lines = rawText.split('\n');
+    for (const line of lines) {
+      const done = handleEvent(parseNdjsonLine(line, onEvent));
+      if (done) return done;
+    }
+    if (!result.content.trim()) {
+      const err = new Error('模型无可用输出');
+      err.code = 'UPSTREAM_CHAT_FAILED';
+      err.status = 502;
+      throw err;
+    }
+    return result;
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    let chunk;
     try {
-      const content = extractAssistantText(providerKey, data);
-      if (content) return { content, raw: data, via: req.label };
-      errors.push(`${req.label}: 空响应`);
-    } catch (e) {
-      errors.push(`${req.label}: ${e.message}`);
+      chunk = await reader.read();
+    } catch (error) {
+      if (error?.name === 'AbortError' || signal?.aborted) throw toAbortError();
+      throw error;
+    }
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      const done = handleEvent(parseNdjsonLine(line, onEvent));
+      if (done) return done;
     }
   }
 
-  throw new Error(errors.join(' | ') || '模型无可用输出');
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    const done = handleEvent(parseNdjsonLine(buffer, onEvent));
+    if (done) return done;
+  }
+
+  if (signal?.aborted) throw toAbortError();
+  if (!result.content.trim()) {
+    const err = new Error('模型无可用输出');
+    err.code = 'UPSTREAM_CHAT_FAILED';
+    err.status = 502;
+    throw err;
+  }
+  return result;
+}
+
+export async function registerWithPassword({ username, password, email }) {
+  return requestJson({
+    path: '/api/auth/register',
+    method: 'POST',
+    payload: { username, password, email }
+  });
+}
+
+export async function loginWithPassword({ login, password }) {
+  return requestJson({
+    path: '/api/auth/login',
+    method: 'POST',
+    payload: { login, password }
+  });
+}
+
+export async function fetchCurrentUser({ authToken }) {
+  return requestJson({
+    path: '/api/me',
+    method: 'GET',
+    authToken
+  });
+}
+
+export async function updateMyProfile({ authToken, username }) {
+  return requestJson({
+    path: '/api/me/profile',
+    method: 'PUT',
+    authToken,
+    payload: { username }
+  });
+}
+
+export async function setMyPassword({ authToken, password, currentPassword }) {
+  return requestJson({
+    path: '/api/auth/password/set',
+    method: 'POST',
+    authToken,
+    payload: { password, currentPassword }
+  });
+}
+
+export async function requestEmailLoginCode({ email }) {
+  return requestJson({
+    path: '/api/auth/email/request-code',
+    method: 'POST',
+    payload: { email }
+  });
+}
+
+export async function loginWithEmailCode({ email, code, username }) {
+  return requestJson({
+    path: '/api/auth/email/login',
+    method: 'POST',
+    payload: { email, code, username }
+  });
+}
+
+export async function getCloudSettings({ authToken }) {
+  return requestJson({
+    path: '/api/settings',
+    method: 'GET',
+    authToken
+  });
+}
+
+export async function getCloudProviderKeys({ authToken }) {
+  return requestJson({
+    path: '/api/settings/api-keys',
+    method: 'GET',
+    authToken
+  });
+}
+
+export async function saveCloudSettings({ authToken, settings }) {
+  return requestJson({
+    path: '/api/settings',
+    method: 'PUT',
+    authToken,
+    payload: { settings }
+  });
+}
+
+export async function saveCloudProviderKey({ authToken, providerKey, apiKey }) {
+  return requestJson({
+    path: `/api/settings/api-keys/${encodeURIComponent(providerKey)}`,
+    method: 'PUT',
+    authToken,
+    payload: { apiKey }
+  });
+}
+
+export async function deleteCloudProviderKey({ authToken, providerKey }) {
+  return requestJson({
+    path: `/api/settings/api-keys/${encodeURIComponent(providerKey)}`,
+    method: 'DELETE',
+    authToken
+  });
+}
+
+export async function requestRawApi({ path, method = 'GET', payload, authToken = '' }) {
+  return requestJson({ path, method, payload, authToken });
 }

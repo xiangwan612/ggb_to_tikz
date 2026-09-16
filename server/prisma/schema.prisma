@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               String               @id @default(cuid())
+  username         String               @unique
+  email            String?              @unique
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+  password         UserPassword?
+  wechatIdentities UserWechatIdentity[]
+  settings         UserSettings?
+  apiKeys          UserApiKey[]
+}
+
+model UserPassword {
+  userId       String   @id
+  passwordHash String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserWechatIdentity {
+  id        String   @id @default(cuid())
+  userId    String
+  openid    String   @unique
+  unionid   String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model UserSettings {
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  settingsJson String @default("{}")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserApiKey {
+  id              String   @id @default(cuid())
+  userId          String
+  providerKey     String
+  encryptedApiKey String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, providerKey])
+  @@index([userId])
+}
+
+model EmailLoginCode {
+  id        String   @id @default(cuid())
+  email     String
+  codeHash  String
+  purpose   String   @default("login")
+  expiresAt DateTime
+  usedAt    DateTime?
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([expiresAt])
+}

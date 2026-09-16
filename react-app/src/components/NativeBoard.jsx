@@ -1,13 +1,24 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 const BASE_URL = import.meta.env.BASE_URL || '/';
 const withBase = (path) => `${BASE_URL}${String(path || '').replace(/^\/+/, '')}`;
-const GGB_SCRIPT_URL = 'https://www.geogebra.org/apps/deployggb.js';
+// GeoGebra 应用与引导脚本都在本地 vendor 目录，不再走 geogebra.org CDN。
+// 见 docs/ 与 MAP.md：CDN 冷启动需下载约 20MB，本地加载首屏即完成且可离线使用。
+const GGB_VENDOR_BASE = withBase('vendor/geogebra/');
+const GGB_SCRIPT_URL = `${GGB_VENDOR_BASE}deployggb.js`;
+const GGB_CODEBASE_URL = `${GGB_VENDOR_BASE}HTML5/5.0/web3d/`;
 const TIKZJAX_SCRIPT_URL = 'https://tikzjax.com/v1/tikzjax.js';
 const PARSER_SCRIPT_URL = withBase('ggb-parser.js');
 const TIKZ_SCRIPT_URL = withBase('tikz-generator.js');
-const LEGACY_PAGE_URL = withBase('legacy-index.html');
+const PARSER_3D_SCRIPT_URL = withBase('ggb-3d-parser.js');
+const TIKZ_3D_SCRIPT_URL = withBase('tikz-3d-generator.js');
 const STORAGE_SHOW_AXES = 'ggb_show_axes';
+const STORAGE_SHOW_GRID = 'ggb_show_grid';
+const STORAGE_3D_SHOW_AXES = 'ggb_3d_show_axes';
+const STORAGE_3D_SHOW_GRID = 'ggb_3d_show_grid';
+const STORAGE_3D_SHOW_PLANE = 'ggb_3d_show_plane';
+const STORAGE_3D_AUTO_ROTATE = 'ggb_3d_auto_rotate';
+const STORAGE_3D_SPIN_SPEED = 'ggb_3d_spin_speed';
 const STORAGE_EXPORT_IMAGE_MODE = 'ggb_export_image_mode';
 const STORAGE_EXPORT_SCALE = 'ggb_export_scale';
 const STORAGE_TIKZ_LINE_EXTEND = 'ggb_tikz_line_extend';
@@ -19,6 +30,10 @@ const STORAGE_TIKZ_FUNCTION_THICKNESS = 'ggb_tikz_function_thickness';
 const STORAGE_TIKZ_LINE_THICKNESS = 'ggb_tikz_line_thickness';
 const STORAGE_TIKZ_SEGMENT_THICKNESS = 'ggb_tikz_segment_thickness';
 const STORAGE_TIKZ_POLYGON_THICKNESS = 'ggb_tikz_polygon_thickness';
+const STORAGE_TIKZ_FACE_COLOR = 'ggb_tikz_face_color';
+const STORAGE_TIKZ_FACE_OPACITY = 'ggb_tikz_face_opacity';
+const STORAGE_TIKZ_LINE_COLOR = 'ggb_tikz_line_color';
+const STORAGE_TIKZ_LINE_DASH = 'ggb_tikz_line_dash';
 const STORAGE_TIKZ_SHOW_AXIS = 'ggb_tikz_show_axis';
 const STORAGE_TIKZ_ANGLE_REGION = 'ggb_tikz_angle_region';
 const STORAGE_TIKZ_OPT_TARGET_CM = 'ggb_tikz_opt_target_cm'; // 兼容旧版本
@@ -33,9 +48,32 @@ const STORAGE_TIKZ_OPT_LABEL_OFFSET_PT = 'ggb_tikz_opt_label_offset_pt';
 const STORAGE_TIKZ_OPT_LABEL_FONT_PT = 'ggb_tikz_opt_label_font_pt';
 const STORAGE_TIKZ_OPT_LABEL_MAX_SHIFT_PT = 'ggb_tikz_opt_label_max_shift_pt';
 const STORAGE_TIKZ_LABEL_OVERRIDES = 'ggb_tikz_label_overrides';
+const STORAGE_TIKZ3D_AZIMUTH = 'ggb_tikz3d_azimuth_deg';
+const STORAGE_TIKZ3D_DEPTH = 'ggb_tikz3d_depth_scale';
+const STORAGE_TIKZ3D_SHOW_POINT_LABELS = 'ggb_tikz3d_show_point_labels';
+const STORAGE_TIKZ3D_PROJECTION_PRESET = 'ggb_tikz3d_projection_preset';
+const STORAGE_TIKZ3D_AUTO_ROUND_PREFER = 'ggb_tikz3d_auto_round_prefer';
+const TIKZ_SETTINGS_UPDATED_EVENT = 'ggb:tikz-settings-updated';
+const TOAST_DURATION_MS = 1500;
+const DEFAULT_TIKZ3D_AZIMUTH = -60;
+const DEFAULT_TIKZ3D_DEPTH = 0.55;
+const DEFAULT_TIKZ3D_PROJECTION_PRESET = 'exam';
+const VALID_TIKZ3D_PROJECTION_PRESETS = ['exam', 'round', 'xml', 'custom'];
+const ROUND_PREFERRED_STRUCTURED_KEYS = ['cylinders3d', 'cones3d', 'spheres3d'];
+const ROUND_PREFERRED_COMMANDS = new Set(['Cylinder', 'Cone', 'Sphere']);
 const DEFAULT_TIKZ_BOUNDS = { xmin: -2.3, xmax: 2.8, ymin: -2.6, ymax: 2.4 };
+const DEFAULT_3D_ENTRY_VIEW = Object.freeze({
+  xZero: -3.9585129906448397,
+  yZero: -3.847254076123744,
+  zZero: -1.5778469041735042,
+  scale: 55.30186435273293,
+  xAngle: 32,
+  zAngle: 64
+});
 const TIKZ_THICKNESS_OPTIONS = ['thin', 'semithick', 'thick', 'very thick', 'ultra thick'];
 const ALLOWED_TIKZ_THICKNESS = new Set(TIKZ_THICKNESS_OPTIONS);
+const LINE_DASH_OPTIONS = ['', 'solid', 'dashed', 'dotted', 'dash dot', 'dash dot dot'];
+const ALLOWED_LINE_DASH = new Set(LINE_DASH_OPTIONS);
 const LABEL_POSITION_OPTIONS = ['above right', 'above left', 'below right', 'below left', 'above', 'below', 'right', 'left'];
 const LABEL_NUDGE_DIRECTIONS = [
   [{ icon: '↖', dx: -1, dy: 1, title: '左上' }, { icon: '↑', dx: 0, dy: 1, title: '上' }, { icon: '↗', dx: 1, dy: 1, title: '右上' }],
@@ -84,6 +122,38 @@ function ensureTikzJaxReady() {
   return tikzJaxReadyPromise;
 }
 
+async function renderTikzJaxFallback(host, rawCode) {
+  const render = await ensureTikzJaxReady();
+  host.innerHTML = '';
+  const tikzScript = document.createElement('script');
+  tikzScript.type = 'text/tikz';
+  tikzScript.text = buildTikzPreviewContent(rawCode);
+  host.appendChild(tikzScript);
+
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      observer.disconnect();
+      reject(new Error('浏览器渲染超时'));
+    }, 25_000);
+    const finish = () => {
+      if (!host.querySelector('svg')) return;
+      window.clearTimeout(timeout);
+      observer.disconnect();
+      resolve();
+    };
+    const observer = new MutationObserver(finish);
+    observer.observe(host, { childList: true, subtree: true });
+    try {
+      Promise.resolve(render()).then(finish).catch(reject);
+      finish();
+    } catch (error) {
+      window.clearTimeout(timeout);
+      observer.disconnect();
+      reject(error);
+    }
+  });
+}
+
 function ensureGGBScript() {
   return new Promise((resolve, reject) => {
     if (window.GGBApplet) {
@@ -121,14 +191,63 @@ function ensurePlainScript(src) {
   });
 }
 
-function getLegacyWindow() {
-  const iframe = document.querySelector('.legacy-frame');
-  if (!iframe || !iframe.contentWindow) return null;
-  return iframe.contentWindow;
-}
-
 function readShowAxes() {
   return (localStorage.getItem(STORAGE_SHOW_AXES) || 'on') === 'on';
+}
+
+function readShowGrid() {
+  return (localStorage.getItem(STORAGE_SHOW_GRID) || 'off') === 'on';
+}
+
+function read3DDisplaySettings() {
+  const spinRaw = Number(localStorage.getItem(STORAGE_3D_SPIN_SPEED) || 2);
+  return {
+    showAxes: (localStorage.getItem(STORAGE_3D_SHOW_AXES) || 'on') === 'on',
+    showGrid: (localStorage.getItem(STORAGE_3D_SHOW_GRID) || 'on') === 'on',
+    showPlane: (localStorage.getItem(STORAGE_3D_SHOW_PLANE) || 'on') === 'on',
+    autoRotate: (localStorage.getItem(STORAGE_3D_AUTO_ROTATE) || 'off') === 'on',
+    spinSpeed: Number.isFinite(spinRaw) ? Math.max(-10, Math.min(10, spinRaw)) : 2
+  };
+}
+
+function parse3DCoordSystemFromXml(xmlText) {
+  const xml = String(xmlText || '').trim();
+  if (!xml || typeof DOMParser === 'undefined') return null;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    if (doc.querySelector('parsererror')) return null;
+    const coord = doc.querySelector('euclidianView3D > coordSystem');
+    if (!coord) return null;
+    const readAttr = (name) => {
+      const value = Number(coord.getAttribute(name));
+      return Number.isFinite(value) ? value : null;
+    };
+    const parsed = {
+      xZero: readAttr('xZero'),
+      yZero: readAttr('yZero'),
+      zZero: readAttr('zZero'),
+      scale: readAttr('scale'),
+      xAngle: readAttr('xAngle'),
+      zAngle: readAttr('zAngle')
+    };
+    return Object.values(parsed).every((value) => value !== null) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function isDefault3DEntryViewXml(xmlText) {
+  const parsed = parse3DCoordSystemFromXml(xmlText);
+  if (!parsed) return false;
+  const tolerance = 1e-3;
+  return (
+    Math.abs(parsed.xZero - DEFAULT_3D_ENTRY_VIEW.xZero) <= tolerance
+    && Math.abs(parsed.yZero - DEFAULT_3D_ENTRY_VIEW.yZero) <= tolerance
+    && Math.abs(parsed.zZero - DEFAULT_3D_ENTRY_VIEW.zZero) <= tolerance
+    && Math.abs(parsed.scale - DEFAULT_3D_ENTRY_VIEW.scale) <= tolerance
+    && Math.abs(parsed.xAngle - DEFAULT_3D_ENTRY_VIEW.xAngle) <= tolerance
+    && Math.abs(parsed.zAngle - DEFAULT_3D_ENTRY_VIEW.zAngle) <= tolerance
+  );
 }
 
 function applyAxesVisibility(api, showAxes) {
@@ -145,6 +264,400 @@ function applyAxesVisibility(api, showAxes) {
   } catch {
     // ignore API differences
   }
+}
+
+function runEvalSilently(api, command) {
+  if (!api || typeof api.evalCommand !== 'function') return false;
+  try {
+    return api.evalCommand(command) !== false;
+  } catch {
+    return false;
+  }
+}
+
+function clearBoardObjects(api) {
+  if (!api) return { ok: false, deleted: 0, total: 0, fallback: '' };
+  let names = [];
+  try {
+    if (typeof api.getAllObjectNames === 'function') {
+      const arr = api.getAllObjectNames();
+      names = Array.isArray(arr) ? arr : [];
+    }
+  } catch {
+    names = [];
+  }
+
+  const keep = new Set(['xAxis', 'yAxis', 'zAxis', 'xOyPlane']);
+  let deleted = 0;
+  names.forEach((nameRaw) => {
+    const name = String(nameRaw || '').trim();
+    if (!name || keep.has(name)) return;
+    try {
+      if (typeof api.deleteObject === 'function') {
+        const ret = api.deleteObject(name);
+        if (ret !== false) {
+          deleted += 1;
+          return;
+        }
+      }
+    } catch {
+      // continue fallback
+    }
+    if (runEvalSilently(api, `Delete(${name})`)) {
+      deleted += 1;
+    }
+  });
+
+  if (deleted > 0 || names.length === 0) {
+    return { ok: true, deleted, total: names.length, fallback: '' };
+  }
+
+  if (typeof api.reset === 'function') {
+    try {
+      api.reset();
+      return { ok: true, deleted: 0, total: names.length, fallback: 'reset' };
+    } catch {
+      // ignore reset errors
+    }
+  }
+
+  return { ok: false, deleted: 0, total: names.length, fallback: '' };
+}
+
+function is3DConstructionEmptyXml(xmlText) {
+  const xml = String(xmlText || '').trim();
+  if (!xml || typeof DOMParser === 'undefined') return true;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    if (doc.querySelector('parsererror')) return true;
+    const construction = doc.querySelector('construction');
+    if (!construction) return true;
+    return !construction.querySelector('command, element, expression');
+  } catch {
+    return true;
+  }
+}
+
+function patchDefault3DEntryXml(xmlText, width, height) {
+  const xml = String(xmlText || '').trim();
+  if (!xml || typeof DOMParser === 'undefined' || typeof XMLSerializer === 'undefined') return '';
+  const w = Math.max(640, Math.floor(Number(width) || 1113));
+  const h = Math.max(480, Math.floor(Number(height) || 842));
+  const v = DEFAULT_3D_ENTRY_VIEW;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    if (doc.querySelector('parsererror')) return '';
+    const ensureChild = (parent, tag) => {
+      let node = parent?.querySelector?.(tag) || null;
+      if (!node && parent) {
+        node = doc.createElement(tag);
+        parent.appendChild(node);
+      }
+      return node;
+    };
+
+    const gui = ensureChild(doc.querySelector('geogebra') || doc.documentElement, 'gui');
+    const windowEl = ensureChild(gui, 'window');
+    if (windowEl) {
+      windowEl.setAttribute('width', String(w));
+      windowEl.setAttribute('height', String(h));
+    }
+
+    const kernel = ensureChild(doc.querySelector('kernel') || doc.documentElement, 'kernel');
+    const uses3d = ensureChild(kernel, 'uses3D');
+    if (uses3d) uses3d.setAttribute('val', 'true');
+
+    const ev3d = ensureChild(doc.querySelector('euclidianView3D') || doc.documentElement, 'euclidianView3D');
+    const coord = ensureChild(ev3d, 'coordSystem');
+    if (coord) {
+      coord.setAttribute('xZero', String(v.xZero));
+      coord.setAttribute('yZero', String(v.yZero));
+      coord.setAttribute('zZero', String(v.zZero));
+      coord.setAttribute('scale', String(v.scale));
+      coord.setAttribute('xAngle', String(v.xAngle));
+      coord.setAttribute('zAngle', String(v.zAngle));
+    }
+    const evSettings = ensureChild(ev3d, 'evSettings');
+    if (evSettings) {
+      evSettings.setAttribute('axes', 'true');
+      evSettings.setAttribute('grid', 'true');
+      evSettings.setAttribute('gridIsBold', 'false');
+      evSettings.setAttribute('pointCapturing', '3');
+      evSettings.setAttribute('rightAngleStyle', '1');
+      evSettings.setAttribute('gridType', '3');
+    }
+    const ensureAxis = (id, label) => {
+      let axis = ev3d.querySelector(`axis[id="${id}"]`);
+      if (!axis) {
+        axis = doc.createElement('axis');
+        axis.setAttribute('id', String(id));
+        ev3d.appendChild(axis);
+      }
+      axis.setAttribute('show', 'true');
+      axis.setAttribute('label', label);
+      axis.setAttribute('unitLabel', '');
+      axis.setAttribute('tickStyle', '1');
+      axis.setAttribute('showNumbers', 'true');
+    };
+    ensureAxis(0, 'x');
+    ensureAxis(1, 'y');
+    ensureAxis(2, 'z');
+    const plate = ensureChild(ev3d, 'plate');
+    if (plate) plate.setAttribute('show', 'true');
+    const clipping = ensureChild(ev3d, 'clipping');
+    if (clipping) {
+      clipping.setAttribute('use', 'false');
+      clipping.setAttribute('show', 'false');
+      clipping.setAttribute('size', '1');
+    }
+    const projection = ensureChild(ev3d, 'projection');
+    if (projection) projection.setAttribute('type', '0');
+
+    return new XMLSerializer().serializeToString(doc);
+  } catch {
+    return '';
+  }
+}
+
+function buildDefault3DEntryXml(width, height) {
+  const w = Math.max(640, Math.floor(Number(width) || 1113));
+  const h = Math.max(480, Math.floor(Number(height) || 842));
+  const v = DEFAULT_3D_ENTRY_VIEW;
+  return `<?xml version="1.0" encoding="utf-8"?>
+<geogebra format="5.0" version="5.2.909.9" app="3d" platform="w" id="codex-default-3d" xmlns="" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://www.geogebra.org/apps/xsd/ggb.xsd">
+<gui>
+  <window width="${w}" height="${h}"/>
+  <labelingStyle val="3"/>
+  <font size="16"/>
+</gui>
+<euclidianView>
+  <coordSystem xZero="0" yZero="0" scale="50" yscale="50"/>
+  <evSettings axes="true" grid="false" gridIsBold="false" pointCapturing="3" rightAngleStyle="1" checkboxSize="26" gridType="3"/>
+  <bgColor r="255" g="255" b="255"/>
+  <axesColor r="28" g="28" b="31"/>
+  <gridColor r="180" g="179" b="186"/>
+</euclidianView>
+<algebraView>
+  <mode val="3"/>
+</algebraView>
+<kernel>
+  <uses3D val="true"/>
+  <continuous val="false"/>
+  <usePathAndRegionParameters val="true"/>
+  <decimals val="2"/>
+  <angleUnit val="degree"/>
+  <algebraStyle val="3" spreadsheet="0"/>
+  <coordStyle val="0"/>
+</kernel>
+<tableview min="0" max="0" step="0"/>
+<scripting blocked="false" disabled="false"/>
+<euclidianView3D>
+  <coordSystem xZero="${v.xZero}" yZero="${v.yZero}" zZero="${v.zZero}" scale="${v.scale}" xAngle="${v.xAngle}" zAngle="${v.zAngle}"/>
+  <evSettings axes="true" grid="true" gridIsBold="false" pointCapturing="3" rightAngleStyle="1" gridType="3"/>
+  <axis id="0" show="true" label="x" unitLabel="" tickStyle="1" showNumbers="true"/>
+  <axis id="1" show="true" label="y" unitLabel="" tickStyle="1" showNumbers="true"/>
+  <axis id="2" show="true" label="z" unitLabel="" tickStyle="1" showNumbers="true"/>
+  <plate show="true"/>
+  <bgColor r="255" g="255" b="255"/>
+  <clipping use="false" show="false" size="1"/>
+  <projection type="0"/>
+</euclidianView3D>
+<construction title="" author="" date="">
+</construction>
+</geogebra>`;
+}
+
+function apply3DEntryPreset(api, width, height) {
+  if (!api) return false;
+  const xmlText = (typeof api.getXML === 'function') ? String(api.getXML() || '') : '';
+  if (xmlText && !is3DConstructionEmptyXml(xmlText)) return false;
+  let applied = false;
+
+  if (xmlText) {
+    const patched = patchDefault3DEntryXml(xmlText, width, height);
+    if (patched) {
+      try {
+        if (typeof api.setXML === 'function') {
+          api.setXML(patched);
+          applied = true;
+        }
+      } catch {
+        // ignore API differences
+      }
+    }
+  }
+
+  if (!applied) {
+    const xml = buildDefault3DEntryXml(width, height);
+    try {
+      if (typeof api.setXML === 'function') {
+        api.setXML(xml);
+        applied = true;
+      }
+    } catch {
+      // ignore API differences
+    }
+    if (!applied) {
+      try {
+        if (typeof api.setXMLBase64 === 'function' && typeof btoa === 'function') {
+          api.setXMLBase64(btoa(xml));
+          applied = true;
+        }
+      } catch {
+        // ignore API differences
+      }
+    }
+  }
+
+  return applied;
+}
+
+function apply3DEntryPresetWithRetry(api, width, height, { maxAttempts = 4, delayMs = 120 } = {}) {
+  if (!api) return () => {};
+  let stopped = false;
+  let timer = 0;
+  let attempts = 0;
+
+  const run = () => {
+    if (stopped) return;
+    attempts += 1;
+    apply3DEntryPreset(api, width, height);
+    const xmlNow = (typeof api.getXML === 'function') ? String(api.getXML() || '') : '';
+    if (isDefault3DEntryViewXml(xmlNow) || attempts >= maxAttempts) {
+      return;
+    }
+    if (typeof window !== 'undefined') {
+      timer = window.setTimeout(run, delayMs);
+    }
+  };
+
+  run();
+
+  return () => {
+    stopped = true;
+    if (timer && typeof window !== 'undefined') {
+      window.clearTimeout(timer);
+    }
+  };
+}
+
+function apply3DDisplayVisibility(api, {
+  showAxes = true,
+  showGrid = false,
+  showPlane = true,
+  autoRotate = false,
+  spinSpeed = 2,
+  hardStopSpin = false
+} = {}) {
+  if (!api) return;
+  const shouldKeepPlaneObject = !!showPlane || !!showGrid;
+  try {
+    if (typeof api.setAxesVisible === 'function') {
+      if (api.setAxesVisible.length >= 4) {
+        api.setAxesVisible(3, showAxes, showAxes, showAxes);
+      } else {
+        api.setAxesVisible(showAxes, showAxes);
+      }
+    }
+    if (typeof api.setAxisVisible === 'function') {
+      api.setAxisVisible(1, showAxes);
+      api.setAxisVisible(2, showAxes);
+      api.setAxisVisible(3, showAxes);
+    }
+  } catch {
+    // ignore API differences
+  }
+  try {
+    if (typeof api.setVisible === 'function') {
+      api.setVisible('xAxis', showAxes);
+      api.setVisible('yAxis', showAxes);
+      api.setVisible('zAxis', showAxes);
+      // 为了支持“底面隐藏但网格显示”，需要在网格开启时保持平面对象可见
+      api.setVisible('xOyPlane', shouldKeepPlaneObject);
+    }
+  } catch {
+    // ignore API differences
+  }
+  try {
+    if (typeof api.setFilling === 'function') {
+      // 用填充透明度表示“底面显示/隐藏”，不影响网格本身
+      api.setFilling('xOyPlane', showPlane ? 0.2 : 0);
+    }
+  } catch {
+    // ignore API differences
+  }
+  try {
+    if (typeof api.setGridVisible === 'function') {
+      if (api.setGridVisible.length >= 2) {
+        api.setGridVisible(3, !!showGrid);
+      } else {
+        api.setGridVisible(!!showGrid);
+      }
+    }
+  } catch {
+    // ignore API differences
+  }
+  const normalizedSpeedRaw = Number(spinSpeed);
+  const normalizedSpeedBase = Number.isFinite(normalizedSpeedRaw) ? normalizedSpeedRaw : 2;
+  const normalizedSpeed = Math.max(-10, Math.min(10, normalizedSpeedBase));
+  const effectiveSpeed = autoRotate
+    ? (Math.abs(normalizedSpeed) <= 1 ? (normalizedSpeed < 0 ? -2 : 2) : normalizedSpeed)
+    : 0;
+  const spinLiteral = Number(effectiveSpeed.toFixed(2));
+  runEvalSilently(api, `SetSpinSpeed(${spinLiteral})`);
+  if (!autoRotate && hardStopSpin) {
+    if (typeof api.stopAnimation === 'function') {
+      try {
+        api.stopAnimation();
+      } catch {
+        // ignore API differences
+      }
+    }
+    if (typeof window !== 'undefined') {
+      window.setTimeout(() => {
+        runEvalSilently(api, 'SetSpinSpeed(0)');
+      }, 80);
+    }
+  }
+}
+
+function readHostSize(host) {
+  const rect = host?.getBoundingClientRect?.() || { width: 0, height: 0 };
+  return {
+    width: Math.max(360, Math.floor(Number(rect.width) || 0)),
+    height: Math.max(420, Math.floor(Number(rect.height) || 0))
+  };
+}
+
+function forceHostChildrenFill(host) {
+  if (!host) return;
+  const root = host.firstElementChild;
+  if (root && root.style) {
+    root.style.width = '100%';
+    root.style.height = '100%';
+    root.style.maxWidth = '100%';
+  }
+  const iframeList = host.querySelectorAll('iframe');
+  iframeList.forEach((node) => {
+    if (!node.style) return;
+    node.style.width = '100%';
+    node.style.height = '100%';
+    node.style.display = 'block';
+  });
+}
+
+function syncAppletSizeToHost(host, applet, api) {
+  if (!host) return;
+  const { width, height } = readHostSize(host);
+  if (applet && typeof applet.setSize === 'function') {
+    applet.setSize(width, height);
+    return;
+  }
+  if (api && typeof api.setSize === 'function') {
+    api.setSize(width, height);
+    return;
+  }
+  forceHostChildrenFill(host);
 }
 
 function dataUrlToBlob(dataUrl) {
@@ -199,6 +712,11 @@ function readTikzThickness(storageKey, fallback) {
   return ALLOWED_TIKZ_THICKNESS.has(v) ? v : fallback;
 }
 
+function normalizeLineDashOption(value) {
+  const v = String(value || '').trim().toLowerCase();
+  return ALLOWED_LINE_DASH.has(v) ? v : '';
+}
+
 function readTikzSettings() {
   const showAxis = (localStorage.getItem(STORAGE_TIKZ_SHOW_AXIS) || 'on') === 'on';
   const lineExtend = Math.max(0, Math.min(6, Number(localStorage.getItem(STORAGE_TIKZ_LINE_EXTEND) || 0.25)));
@@ -210,6 +728,13 @@ function readTikzSettings() {
   const lineThickness = readTikzThickness(STORAGE_TIKZ_LINE_THICKNESS, 'semithick');
   const segmentThickness = readTikzThickness(STORAGE_TIKZ_SEGMENT_THICKNESS, 'thick');
   const polygonThickness = readTikzThickness(STORAGE_TIKZ_POLYGON_THICKNESS, 'thick');
+  const faceColor = String(localStorage.getItem(STORAGE_TIKZ_FACE_COLOR) || 'blue!55').trim() || 'blue!55';
+  const faceOpacityRaw = Number(localStorage.getItem(STORAGE_TIKZ_FACE_OPACITY) || 0.25);
+  const faceOpacity = Number.isFinite(faceOpacityRaw)
+    ? Math.max(0, Math.min(1, faceOpacityRaw))
+    : 0.25;
+  const lineColor = String(localStorage.getItem(STORAGE_TIKZ_LINE_COLOR) || 'black').trim() || 'black';
+  const lineDash = normalizeLineDashOption(localStorage.getItem(STORAGE_TIKZ_LINE_DASH) || '');
   const angleRegionRaw = String(localStorage.getItem(STORAGE_TIKZ_ANGLE_REGION) || 'auto').trim().toLowerCase();
   const lineLineAngleSelector = ['auto', 'left', 'right', 'above', 'below'].includes(angleRegionRaw)
     ? angleRegionRaw
@@ -226,8 +751,91 @@ function readTikzSettings() {
     lineThickness,
     segmentThickness,
     polygonThickness,
+    faceColor,
+    faceOpacity,
+    lineColor,
+    lineDash,
     lineLineAngleSelector
   };
+}
+
+function readTikz3DSettings() {
+  let azimuthText = localStorage.getItem(STORAGE_TIKZ3D_AZIMUTH);
+  let depthText = localStorage.getItem(STORAGE_TIKZ3D_DEPTH);
+  const presetRaw = String(localStorage.getItem(STORAGE_TIKZ3D_PROJECTION_PRESET) || '').trim().toLowerCase();
+  const projectionPreset = VALID_TIKZ3D_PROJECTION_PRESETS.includes(presetRaw)
+    ? presetRaw
+    : DEFAULT_TIKZ3D_PROJECTION_PRESET;
+  // 兼容旧版本默认值（45 / 0.55）：视为“未自定义”，改为跟随 XML 视角
+  const legacyDefault = (
+    azimuthText !== null
+    && depthText !== null
+    && Math.abs(Number(azimuthText) - 45) < 1e-9
+    && Math.abs(Number(depthText) - 0.55) < 1e-9
+  );
+  if (legacyDefault) {
+    azimuthText = null;
+    depthText = null;
+  }
+  const hasManual3dView = (!legacyDefault) && (azimuthText !== null || depthText !== null);
+  const fixedPreset = (legacyDefault && !presetRaw)
+    ? 'xml'
+    : ((!presetRaw && hasManual3dView) ? 'custom' : projectionPreset);
+  const azimuthRaw = azimuthText === null ? NaN : Number(azimuthText);
+  const depthRaw = depthText === null ? NaN : Number(depthText);
+  const showPointLabels = (localStorage.getItem(STORAGE_TIKZ3D_SHOW_POINT_LABELS) || 'on') === 'on';
+  const autoRoundPrefer = (localStorage.getItem(STORAGE_TIKZ3D_AUTO_ROUND_PREFER) || 'on') === 'on';
+  return {
+    projectionPreset: fixedPreset,
+    azimuthDeg: Number.isFinite(azimuthRaw) ? Math.max(-180, Math.min(180, azimuthRaw)) : null,
+    depthScale: Number.isFinite(depthRaw) ? Math.max(0, Math.min(2, depthRaw)) : null,
+    showPointLabels,
+    autoRoundPrefer
+  };
+}
+
+function read3DProjectionFromXml(xmlText) {
+  const out = {
+    azimuthDeg: DEFAULT_TIKZ3D_AZIMUTH,
+    depthScale: DEFAULT_TIKZ3D_DEPTH
+  };
+  const xml = String(xmlText || '').trim();
+  if (!xml || typeof DOMParser === 'undefined') return out;
+  try {
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    const coordSystem = doc.querySelector('euclidianView3D > coordSystem');
+    if (!coordSystem) return out;
+    const zAngleRaw = Number(coordSystem.getAttribute('zAngle'));
+    if (Number.isFinite(zAngleRaw)) {
+      out.azimuthDeg = Math.max(-180, Math.min(180, zAngleRaw));
+    }
+    const xAngleRaw = Number(coordSystem.getAttribute('xAngle'));
+    if (Number.isFinite(xAngleRaw)) {
+      // 由 XML 俯仰角估算深度，20° 对应约 0.55（与历史默认值一致）
+      const depth = Math.abs(Math.sin((xAngleRaw * Math.PI) / 180)) * 1.6;
+      out.depthScale = Math.max(0, Math.min(2, Number(depth.toFixed(4))));
+    }
+  } catch {
+    // ignore malformed xml
+  }
+  return out;
+}
+
+function hasVisible3DItems(list) {
+  return Array.isArray(list) && list.some((item) => item && item.visible !== false);
+}
+
+function shouldPreferRoundProjection(parsed3d) {
+  const structured = parsed3d?.structured || {};
+  for (const key of ROUND_PREFERRED_STRUCTURED_KEYS) {
+    if (hasVisible3DItems(structured[key])) return true;
+  }
+  if (hasVisible3DItems(structured.others)) {
+    const matched = structured.others.some((item) => ROUND_PREFERRED_COMMANDS.has(String(item?.commandName || '').trim()));
+    if (matched) return true;
+  }
+  const elements = Array.isArray(parsed3d?.elements) ? parsed3d.elements : [];
+  return elements.some((item) => ROUND_PREFERRED_COMMANDS.has(String(item?.commandName || '').trim()));
 }
 
 function extractTikzPictureBlock(code) {
@@ -365,7 +973,7 @@ function buildTikzPreviewContent(rawCode) {
   const tikzNoComments = stripLatexComments(tikzRaw);
   const tikzCompat = convertTkzAnglesForPreview(tikzNoComments);
   const tikzCode = makeAsciiSafeForBtoa(tikzCompat).replace(/<\/script>/gi, '<\\/script>');
-  const preamble = '\\usetikzlibrary{arrows.meta,calc,intersections}';
+  const preamble = '\\usetikzlibrary{arrows.meta,calc,intersections,3d}';
   return `${preamble}\n${tikzCode}`;
 }
 
@@ -818,6 +1426,9 @@ function writeLabelOverrides(map) {
     if (n) out[nk] = n;
   });
   localStorage.setItem(STORAGE_TIKZ_LABEL_OVERRIDES, JSON.stringify(out));
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(TIKZ_SETTINGS_UPDATED_EVENT, { detail: { source: 'label-overrides' } }));
+  }
   return out;
 }
 
@@ -862,6 +1473,143 @@ function extractAdjustableLabelOptionsMap(code) {
 
 function extractAdjustableLabelsFromTikz(code) {
   return Object.keys(extractAdjustableLabelOptionsMap(code)).sort();
+}
+
+function getTikzKeyOptionValue(optionsText, key) {
+  const escaped = String(key || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(?:^|,)\\s*${escaped}\\s*=\\s*([^,]+)`, 'i');
+  const m = String(optionsText || '').match(re);
+  return m ? String(m[1] || '').trim() : '';
+}
+
+function removeTikzKeyOption(optionsText, key) {
+  const escaped = String(key || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(^|,)\\s*${escaped}\\s*=\\s*[^,]*(?=,|$)`, 'ig');
+  const out = String(optionsText || '').replace(re, '$1');
+  return cleanupTikzOptionCommas(out);
+}
+
+function parseDashOptionFromTikzOptions(optionsText) {
+  const opts = String(optionsText || '').toLowerCase();
+  if (/(^|,)\s*dash\s+dot\s+dot\s*(,|$)/.test(opts)) return 'dash dot dot';
+  if (/(^|,)\s*dash\s+dot\s*(,|$)/.test(opts)) return 'dash dot';
+  if (/(^|,)\s*dashed\s*(,|$)/.test(opts) || /dash\s*pattern\s*=/.test(opts)) return 'dashed';
+  if (/(^|,)\s*dotted\s*(,|$)/.test(opts)) return 'dotted';
+  if (/(^|,)\s*solid\s*(,|$)/.test(opts)) return 'solid';
+  return '';
+}
+
+function rebuildTikzCommandLine(prefix, optionsText, suffix) {
+  const opts = cleanupTikzOptionCommas(optionsText);
+  return opts ? `${prefix}[${opts}]${suffix}` : `${prefix}${suffix}`;
+}
+
+function extractAdjustableStyleItems(code) {
+  const lines = String(code || '').split('\n');
+  const out = [];
+  let lineNo = 0;
+  let faceNo = 0;
+  lines.forEach((ln, idx) => {
+    const s = String(ln || '');
+    const t = s.trim();
+    if (!t || t.startsWith('%')) return;
+
+    const drawMatch = s.match(/^(\s*\\draw)(\[[^\]]*\])?(\s*.*)$/);
+    if (drawMatch) {
+      if (isAxisDrawLine(s)) return;
+      const opts = String(drawMatch[2] || '').replace(/^\[|\]$/g, '');
+      const suffix = String(drawMatch[3] || '');
+      const hasCycle = /--\s*cycle/.test(suffix);
+      const hasFill = /(^|,)\s*fill\s*=/i.test(opts);
+      const kind = (hasCycle || hasFill) ? 'face' : 'line';
+      if (kind === 'line') lineNo += 1;
+      if (kind === 'face') faceNo += 1;
+      const brief = suffix.replace(/\s+/g, ' ').trim().slice(0, 36);
+      out.push({
+        id: `${kind}:${idx}`,
+        kind,
+        lineIndex: idx,
+        options: opts,
+        label: `${kind === 'line' ? '线' : '面'} ${kind === 'line' ? lineNo : faceNo}${brief ? ` · ${brief}` : ''}`
+      });
+      return;
+    }
+
+    const fillMatch = s.match(/^(\s*\\fill)(\[[^\]]*\])?(\s*.*)$/);
+    if (!fillMatch) return;
+    const suffix = String(fillMatch[3] || '');
+    if (!/--\s*cycle/.test(suffix)) return;
+    faceNo += 1;
+    const opts = String(fillMatch[2] || '').replace(/^\[|\]$/g, '');
+    const brief = suffix.replace(/\s+/g, ' ').trim().slice(0, 36);
+    out.push({
+      id: `face:${idx}`,
+      kind: 'face',
+      lineIndex: idx,
+      options: opts,
+      label: `面 ${faceNo}${brief ? ` · ${brief}` : ''}`
+    });
+  });
+  return out;
+}
+
+function applyStyleAdjustToTikzCode(code, targetId, patch = {}) {
+  const id = String(targetId || '').trim();
+  const m = id.match(/^(line|face):(\d+)$/);
+  if (!m) return String(code || '');
+  const kind = m[1];
+  const lineIndex = Number(m[2]);
+  const lines = String(code || '').split('\n');
+  if (!Number.isInteger(lineIndex) || lineIndex < 0 || lineIndex >= lines.length) return String(code || '');
+  const src = String(lines[lineIndex] || '');
+
+  const drawMatch = src.match(/^(\s*\\draw)(\[[^\]]*\])?(\s*.*)$/);
+  const fillMatch = src.match(/^(\s*\\fill)(\[[^\]]*\])?(\s*.*)$/);
+  if (!drawMatch && !fillMatch) return String(code || '');
+
+  if (kind === 'line') {
+    if (!drawMatch || isAxisDrawLine(src)) return String(code || '');
+    const prefix = drawMatch[1];
+    let opts = String(drawMatch[2] || '').replace(/^\[|\]$/g, '');
+    const suffix = drawMatch[3];
+    opts = stripDashOptions(opts);
+    const dash = normalizeLineDashOption(patch.lineDash || '');
+    if (dash && dash !== 'solid') {
+      opts = `${opts}${opts ? ', ' : ''}${dash}`;
+    }
+    const lineColor = String(patch.lineColor || '').trim();
+    opts = lineColor ? setTikzKeyOption(opts, 'draw', lineColor) : removeTikzKeyOption(opts, 'draw');
+    lines[lineIndex] = rebuildTikzCommandLine(prefix, opts, suffix);
+    return lines.join('\n');
+  }
+
+  const faceColor = String(patch.faceColor || '').trim();
+  const faceOpacityText = String(patch.faceOpacity ?? '').trim();
+  const faceOpacityNum = Number(faceOpacityText);
+  const hasFaceOpacity = faceOpacityText !== '' && Number.isFinite(faceOpacityNum);
+  const faceOpacity = hasFaceOpacity ? Math.max(0, Math.min(1, faceOpacityNum)) : null;
+
+  if (drawMatch) {
+    const prefix = drawMatch[1];
+    let opts = String(drawMatch[2] || '').replace(/^\[|\]$/g, '');
+    const suffix = drawMatch[3];
+    opts = faceColor ? setTikzKeyOption(opts, 'fill', faceColor) : removeTikzKeyOption(opts, 'fill');
+    opts = hasFaceOpacity
+      ? setTikzKeyOption(opts, 'fill opacity', Number(faceOpacity.toFixed(2)))
+      : removeTikzKeyOption(opts, 'fill opacity');
+    lines[lineIndex] = rebuildTikzCommandLine(prefix, opts, suffix);
+    return lines.join('\n');
+  }
+
+  const prefix = fillMatch[1];
+  let opts = String(fillMatch[2] || '').replace(/^\[|\]$/g, '');
+  const suffix = fillMatch[3];
+  opts = faceColor ? setTikzKeyOption(opts, 'fill', faceColor) : removeTikzKeyOption(opts, 'fill');
+  opts = hasFaceOpacity
+    ? setTikzKeyOption(opts, 'opacity', Number(faceOpacity.toFixed(2)))
+    : removeTikzKeyOption(opts, 'opacity');
+  lines[lineIndex] = rebuildTikzCommandLine(prefix, opts, suffix);
+  return lines.join('\n');
 }
 
 function applyLabelOverridesToTikzCode(code, overrides = {}, labelFontPt = 12, labelMaxShiftPt = 12) {
@@ -1072,6 +1820,98 @@ function optimizeTikzCodeRules(rawCode, prefs = {}) {
   return out;
 }
 
+function cleanupTikzOptionCommas(text) {
+  return String(text || '')
+    .replace(/\s*,\s*/g, ', ')
+    .replace(/^\s*,\s*|\s*,\s*$/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function stripDashOptions(optionsText) {
+  let out = String(optionsText || '');
+  out = out
+    .replace(/(^|,)\s*dashed\s*(?=,|$)/gi, '$1')
+    .replace(/(^|,)\s*dotted\s*(?=,|$)/gi, '$1')
+    .replace(/(^|,)\s*dash\s+dot\s+dot\s*(?=,|$)/gi, '$1')
+    .replace(/(^|,)\s*dash\s+dot\s*(?=,|$)/gi, '$1')
+    .replace(/(^|,)\s*dash\s*pattern\s*=\s*[^,]*(?=,|$)/gi, '$1');
+  return cleanupTikzOptionCommas(out);
+}
+
+function setTikzKeyOption(optionsText, key, value) {
+  const re = new RegExp(`(^|,)\\s*${String(key).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*[^,]*(?=,|$)`, 'i');
+  let out = String(optionsText || '');
+  if (re.test(out)) {
+    out = out.replace(re, `$1 ${key}=${value}`);
+  } else {
+    out = `${out}${out.trim() ? ', ' : ''}${key}=${value}`;
+  }
+  return cleanupTikzOptionCommas(out);
+}
+
+function isAxisDrawLine(line) {
+  return /\{\$[xyz]\$\}\s*;/.test(String(line || ''));
+}
+
+function applyGlobalTikzStyleOverrides(code, prefs = {}) {
+  const faceColor = String(prefs.faceColor || '').trim();
+  const faceOpacityRaw = Number(prefs.faceOpacity);
+  const faceOpacity = Number.isFinite(faceOpacityRaw) ? Math.max(0, Math.min(1, faceOpacityRaw)) : null;
+  const lineColor = String(prefs.lineColor || '').trim();
+  const lineDash = normalizeLineDashOption(prefs.lineDash || '');
+  const lines = String(code || '').split('\n');
+
+  const updated = lines.map((line) => {
+    const s = String(line || '');
+    if (!s.trim() || s.trim().startsWith('%')) return s;
+
+    const drawMatch = s.match(/^(\s*\\draw)\[([^\]]*)\](.*)$/);
+    if (drawMatch) {
+      const prefix = drawMatch[1];
+      let opts = drawMatch[2];
+      const suffix = drawMatch[3];
+      const hasFill = /(^|,)\s*fill\s*=/.test(opts);
+
+      if (!isAxisDrawLine(s)) {
+        opts = stripDashOptions(opts);
+        if (lineDash && lineDash !== 'solid') {
+          opts = `${opts}${opts ? ', ' : ''}${lineDash}`;
+        }
+        if (lineColor) {
+          opts = `${opts}${opts ? ', ' : ''}${lineColor}`;
+        }
+      }
+
+      if (hasFill && faceColor) {
+        opts = setTikzKeyOption(opts, 'fill', faceColor);
+      }
+      if (hasFill && faceOpacity !== null) {
+        opts = setTikzKeyOption(opts, 'fill opacity', Number(faceOpacity.toFixed(2)));
+      }
+      return `${prefix}[${cleanupTikzOptionCommas(opts)}]${suffix}`;
+    }
+
+    const fillMatch = s.match(/^(\s*\\fill)\[([^\]]*)\](.*)$/);
+    if (fillMatch && /--\s*cycle/.test(s)) {
+      const prefix = fillMatch[1];
+      let opts = fillMatch[2];
+      const suffix = fillMatch[3];
+      if (faceColor) {
+        opts = `${opts}${opts ? ', ' : ''}${faceColor}`;
+      }
+      if (faceOpacity !== null) {
+        opts = setTikzKeyOption(opts, 'opacity', Number(faceOpacity.toFixed(2)));
+      }
+      return `${prefix}[${cleanupTikzOptionCommas(opts)}]${suffix}`;
+    }
+
+    return s;
+  });
+
+  return updated.join('\n');
+}
+
 const ELEMENT_GROUPS = [
   { key: 'points', icon: '📍', title: '点' },
   { key: 'functions', icon: '📈', title: '函数' },
@@ -1142,7 +1982,7 @@ function formatElementSummary(el = {}) {
   return el.type || 'object';
 }
 
-export default function NativeBoard({ onReadyChange }) {
+export default function NativeBoard({ onReadyChange, boardType = '2d', onBoardTypeChange }) {
   const getCenteredTikzWindowPos = () => {
     if (typeof window === 'undefined') return { x: 24, y: 24 };
     const vw = window.innerWidth;
@@ -1169,9 +2009,9 @@ export default function NativeBoard({ onReadyChange }) {
   });
   const [nativeApi, setNativeApi] = useState(null);
   const [boardStatus, setBoardStatus] = useState('画板初始化中...');
-  const [actionStatus, setActionStatus] = useState('');
-  const [toastVisible, setToastVisible] = useState(false);
-  const [toastText, setToastText] = useState('');
+  const [actionStatus, setActionStatusRaw] = useState('');
+  const [actionStatusTick, setActionStatusTick] = useState(0);
+  const [toastItems, setToastItems] = useState([]);
   const [elementsOpen, setElementsOpen] = useState(false);
   const [elementsData, setElementsData] = useState(null);
   const [elementsRawXml, setElementsRawXml] = useState('');
@@ -1180,6 +2020,10 @@ export default function NativeBoard({ onReadyChange }) {
   const [tikzDebugCode, setTikzDebugCode] = useState('');
   const [tikzPreviewContent, setTikzPreviewContent] = useState('');
   const [tikzPreviewSize, setTikzPreviewSize] = useState(null);
+  const [tikzPreviewState, setTikzPreviewState] = useState({ phase: 'idle', message: '尚未编译', engine: '' });
+  const [tikzPreviewRevision, setTikzPreviewRevision] = useState(0);
+  const [tikzCompiledPdf, setTikzCompiledPdf] = useState('');
+  const tikzCompileDebounceRef = useRef(null);
   const [tikzWindowPos, setTikzWindowPos] = useState(() => getCenteredTikzWindowPos());
   const [tikzPrefsOpen, setTikzPrefsOpen] = useState(false);
   const [labelOverrides, setLabelOverrides] = useState(() => readLabelOverrides());
@@ -1189,6 +2033,12 @@ export default function NativeBoard({ onReadyChange }) {
   const [labelAdjustY, setLabelAdjustY] = useState('0');
   const [labelAdjustStep, setLabelAdjustStep] = useState('0.2');
   const labelAdjustAutoTimerRef = useRef(null);
+  const [styleAdjustTarget, setStyleAdjustTarget] = useState('');
+  const [styleAdjustLineColor, setStyleAdjustLineColor] = useState('');
+  const [styleAdjustLineDash, setStyleAdjustLineDash] = useState('');
+  const [styleAdjustFaceColor, setStyleAdjustFaceColor] = useState('');
+  const [styleAdjustFaceOpacity, setStyleAdjustFaceOpacity] = useState('');
+  const styleAdjustAutoTimerRef = useRef(null);
   const nudgeHoldDelayRef = useRef(null);
   const nudgeHoldIntervalRef = useRef(null);
   const [optTargetWcm, setOptTargetWcm] = useState(() => {
@@ -1234,6 +2084,7 @@ export default function NativeBoard({ onReadyChange }) {
     const v = String(localStorage.getItem(STORAGE_TIKZ_ANGLE_REGION) || 'auto').trim().toLowerCase();
     return ['auto', 'left', 'right', 'above', 'below'].includes(v) ? v : 'auto';
   });
+  const initTikz3d = readTikz3DSettings();
   const [tikzShowAxis, setTikzShowAxis] = useState(() => (localStorage.getItem(STORAGE_TIKZ_SHOW_AXIS) || 'on') === 'on');
   const [tikzLineExtendCfg, setTikzLineExtendCfg] = useState(() => Number(localStorage.getItem(STORAGE_TIKZ_LINE_EXTEND) || 0.25));
   const [tikzPointRadiusCfg, setTikzPointRadiusCfg] = useState(() => Number(localStorage.getItem(STORAGE_TIKZ_POINT_RADIUS) || 0.25));
@@ -1244,6 +2095,15 @@ export default function NativeBoard({ onReadyChange }) {
   const [tikzLineThicknessCfg, setTikzLineThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_LINE_THICKNESS) || 'semithick');
   const [tikzSegmentThicknessCfg, setTikzSegmentThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_SEGMENT_THICKNESS) || 'thick');
   const [tikzPolygonThicknessCfg, setTikzPolygonThicknessCfg] = useState(() => localStorage.getItem(STORAGE_TIKZ_POLYGON_THICKNESS) || 'thick');
+  const [tikz3dAzimuthCfg, setTikz3dAzimuthCfg] = useState(() => (
+    Number.isFinite(initTikz3d.azimuthDeg) ? initTikz3d.azimuthDeg : DEFAULT_TIKZ3D_AZIMUTH
+  ));
+  const [tikz3dDepthCfg, setTikz3dDepthCfg] = useState(() => (
+    Number.isFinite(initTikz3d.depthScale) ? initTikz3d.depthScale : DEFAULT_TIKZ3D_DEPTH
+  ));
+  const [tikz3dProjectionPresetCfg, setTikz3dProjectionPresetCfg] = useState(() => initTikz3d.projectionPreset || DEFAULT_TIKZ3D_PROJECTION_PRESET);
+  const [tikz3dShowPointLabelsCfg, setTikz3dShowPointLabelsCfg] = useState(() => initTikz3d.showPointLabels);
+  const [tikz3dAutoRoundPreferCfg, setTikz3dAutoRoundPreferCfg] = useState(() => initTikz3d.autoRoundPrefer !== false);
   const [optDraftTargetWcm, setOptDraftTargetWcm] = useState(optTargetWcm);
   const [optDraftTargetHcm, setOptDraftTargetHcm] = useState(optTargetHcm);
   const [optDraftScalePriority, setOptDraftScalePriority] = useState(optScalePriority);
@@ -1265,28 +2125,185 @@ export default function NativeBoard({ onReadyChange }) {
   const [optDraftLineThickness, setOptDraftLineThickness] = useState(tikzLineThicknessCfg);
   const [optDraftSegmentThickness, setOptDraftSegmentThickness] = useState(tikzSegmentThicknessCfg);
   const [optDraftPolygonThickness, setOptDraftPolygonThickness] = useState(tikzPolygonThicknessCfg);
+  const [optDraft3dAzimuth, setOptDraft3dAzimuth] = useState(tikz3dAzimuthCfg);
+  const [optDraft3dDepth, setOptDraft3dDepth] = useState(tikz3dDepthCfg);
+  const [optDraft3dProjectionPreset, setOptDraft3dProjectionPreset] = useState(tikz3dProjectionPresetCfg);
+  const [optDraft3dPointLabels, setOptDraft3dPointLabels] = useState(tikz3dShowPointLabelsCfg);
+  const [optDraft3dAutoRoundPrefer, setOptDraft3dAutoRoundPrefer] = useState(tikz3dAutoRoundPreferCfg);
+  const toastSeqRef = useRef(1);
+  const toastTimerRef = useRef(new Map());
+  const setActionStatus = useCallback((nextStatus) => {
+    setActionStatusRaw(String(nextStatus || ''));
+    setActionStatusTick((v) => v + 1);
+  }, []);
+  const pushToast = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    const id = `nb_${Date.now()}_${toastSeqRef.current++}`;
+    setToastItems((prev) => [...prev, { id, text }]);
+    const timer = window.setTimeout(() => {
+      setToastItems((prev) => prev.filter((item) => item.id !== id));
+      toastTimerRef.current.delete(id);
+    }, TOAST_DURATION_MS);
+    toastTimerRef.current.set(id, timer);
+  }, []);
+
+  const syncTikzPrefsFromStorage = useCallback(() => {
+    const legacy = Number(localStorage.getItem(STORAGE_TIKZ_OPT_TARGET_CM) || 9);
+    const nextTargetWRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_TARGET_W_CM) || legacy);
+    const nextTargetHRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_TARGET_H_CM) || legacy);
+    const nextTargetW = Number.isFinite(nextTargetWRaw) ? Math.max(4, Math.min(20, nextTargetWRaw)) : 9;
+    const nextTargetH = Number.isFinite(nextTargetHRaw) ? Math.max(4, Math.min(20, nextTargetHRaw)) : 9;
+
+    const nextPriorityRaw = String(localStorage.getItem(STORAGE_TIKZ_OPT_PRIORITY) || 'fit').trim().toLowerCase();
+    const nextPriority = ['fit', 'width', 'height'].includes(nextPriorityRaw) ? nextPriorityRaw : 'fit';
+    const nextAxisSymmetryEnabled = (localStorage.getItem(STORAGE_TIKZ_OPT_AXIS_SYMMETRY) || 'off') === 'on';
+    const nextAxisSymmetryModeRaw = String(localStorage.getItem(STORAGE_TIKZ_OPT_AXIS_SYMMETRY_MODE) || 'area').trim().toLowerCase();
+    const nextAxisSymmetryMode = ['area', 'max_area', 'min_height', 'min_width'].includes(nextAxisSymmetryModeRaw)
+      ? nextAxisSymmetryModeRaw
+      : 'area';
+    const nextAxisPadRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_AXIS_PAD) || 0.5);
+    const nextAxisPad = Number.isFinite(nextAxisPadRaw) ? Math.max(0.1, Math.min(5, nextAxisPadRaw)) : 0.5;
+    const nextClipPadRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_CLIP_PAD) || 0);
+    const nextClipPad = Number.isFinite(nextClipPadRaw) ? Math.max(-3, Math.min(3, nextClipPadRaw)) : 0;
+    const nextLabelOffsetRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_OFFSET_PT) || 1);
+    const nextLabelOffsetPt = Number.isFinite(nextLabelOffsetRaw) ? Math.max(0, Math.min(8, nextLabelOffsetRaw)) : 1;
+    const nextLabelFontRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_FONT_PT) || 12);
+    const nextLabelFontPt = Number.isFinite(nextLabelFontRaw) ? Math.max(8, Math.min(20, nextLabelFontRaw)) : 12;
+    const nextLabelShiftRaw = Number(localStorage.getItem(STORAGE_TIKZ_OPT_LABEL_MAX_SHIFT_PT) || 12);
+    const nextLabelMaxShiftPt = Number.isFinite(nextLabelShiftRaw) ? Math.max(2, Math.min(50, nextLabelShiftRaw)) : 12;
+    const nextAngleRegionRaw = String(localStorage.getItem(STORAGE_TIKZ_ANGLE_REGION) || 'auto').trim().toLowerCase();
+    const nextAngleRegion = ['auto', 'left', 'right', 'above', 'below'].includes(nextAngleRegionRaw) ? nextAngleRegionRaw : 'auto';
+
+    const nextTikz = readTikzSettings();
+    const nextTikz3d = readTikz3DSettings();
+    const nextTikz3dAzimuth = Number.isFinite(nextTikz3d.azimuthDeg)
+      ? nextTikz3d.azimuthDeg
+      : DEFAULT_TIKZ3D_AZIMUTH;
+    const nextTikz3dDepth = Number.isFinite(nextTikz3d.depthScale)
+      ? nextTikz3d.depthScale
+      : DEFAULT_TIKZ3D_DEPTH;
+    const nextLabelOverrides = readLabelOverrides();
+
+    setOptTargetWcm(nextTargetW);
+    setOptTargetHcm(nextTargetH);
+    setOptScalePriority(nextPriority);
+    setOptAxisSymmetryEnabled(nextAxisSymmetryEnabled);
+    setOptAxisSymmetryMode(nextAxisSymmetryMode);
+    setOptAxisPad(nextAxisPad);
+    setOptClipPad(nextClipPad);
+    setOptLabelOffsetPt(nextLabelOffsetPt);
+    setOptLabelFontPt(nextLabelFontPt);
+    setOptLabelMaxShiftPt(nextLabelMaxShiftPt);
+    setOptAngleRegion(nextAngleRegion);
+    setTikzShowAxis(nextTikz.showAxis);
+    setTikzLineExtendCfg(nextTikz.lineExtend);
+    setTikzPointRadiusCfg(nextTikz.pointRadiusPt);
+    setTikzPolygonFillCfg(nextTikz.polygonFillColor);
+    setTikzAxisThicknessCfg(nextTikz.axisThickness);
+    setTikzConicThicknessCfg(nextTikz.conicThickness);
+    setTikzFunctionThicknessCfg(nextTikz.functionThickness);
+    setTikzLineThicknessCfg(nextTikz.lineThickness);
+    setTikzSegmentThicknessCfg(nextTikz.segmentThickness);
+    setTikzPolygonThicknessCfg(nextTikz.polygonThickness);
+    setTikz3dAzimuthCfg(nextTikz3dAzimuth);
+    setTikz3dDepthCfg(nextTikz3dDepth);
+    setTikz3dProjectionPresetCfg(nextTikz3d.projectionPreset || DEFAULT_TIKZ3D_PROJECTION_PRESET);
+    setTikz3dShowPointLabelsCfg(nextTikz3d.showPointLabels);
+    setTikz3dAutoRoundPreferCfg(nextTikz3d.autoRoundPrefer !== false);
+    setLabelOverrides(nextLabelOverrides);
+
+    setOptDraftTargetWcm(nextTargetW);
+    setOptDraftTargetHcm(nextTargetH);
+    setOptDraftScalePriority(nextPriority);
+    setOptDraftAxisSymmetryEnabled(nextAxisSymmetryEnabled);
+    setOptDraftAxisSymmetryMode(nextAxisSymmetryMode);
+    setOptDraftAxisPad(nextAxisPad);
+    setOptDraftClipPad(nextClipPad);
+    setOptDraftLabelOffsetPt(nextLabelOffsetPt);
+    setOptDraftLabelFontPt(nextLabelFontPt);
+    setOptDraftLabelMaxShiftPt(nextLabelMaxShiftPt);
+    setOptDraftAngleRegion(nextAngleRegion);
+    setOptDraftShowAxis(nextTikz.showAxis);
+    setOptDraftLineExtend(nextTikz.lineExtend);
+    setOptDraftPointRadius(nextTikz.pointRadiusPt);
+    setOptDraftPolygonFill(nextTikz.polygonFillColor);
+    setOptDraftAxisThickness(nextTikz.axisThickness);
+    setOptDraftConicThickness(nextTikz.conicThickness);
+    setOptDraftFunctionThickness(nextTikz.functionThickness);
+    setOptDraftLineThickness(nextTikz.lineThickness);
+    setOptDraftSegmentThickness(nextTikz.segmentThickness);
+    setOptDraftPolygonThickness(nextTikz.polygonThickness);
+    setOptDraft3dAzimuth(nextTikz3dAzimuth);
+    setOptDraft3dDepth(nextTikz3dDepth);
+    setOptDraft3dProjectionPreset(nextTikz3d.projectionPreset || DEFAULT_TIKZ3D_PROJECTION_PRESET);
+    setOptDraft3dPointLabels(nextTikz3d.showPointLabels);
+    setOptDraft3dAutoRoundPrefer(nextTikz3d.autoRoundPrefer !== false);
+  }, []);
 
   useEffect(() => {
     if (!actionStatus) return;
-    setToastText(actionStatus);
-    setToastVisible(true);
-    const timer = setTimeout(() => setToastVisible(false), 2200);
-    return () => clearTimeout(timer);
-  }, [actionStatus]);
+    pushToast(actionStatus);
+  }, [actionStatus, actionStatusTick, pushToast]);
+
+  useEffect(() => {
+    return () => {
+      toastTimerRef.current.forEach((timer) => clearTimeout(timer));
+      toastTimerRef.current.clear();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onTikzSettingsUpdated = () => {
+      syncTikzPrefsFromStorage();
+    };
+    if (typeof window !== 'undefined') {
+      window.addEventListener(TIKZ_SETTINGS_UPDATED_EVENT, onTikzSettingsUpdated);
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener(TIKZ_SETTINGS_UPDATED_EVENT, onTikzSettingsUpdated);
+      }
+    };
+  }, [syncTikzPrefsFromStorage]);
+
+  useEffect(() => {
+    setBoardStatus(`画板切换中：${boardType === '3d' ? '立体' : '平面'}`);
+  }, [boardType]);
 
   useEffect(() => {
     let cancelled = false;
+    let applet = null;
+    let appletApi = null;
+    let resizeObserver = null;
+    let rafId = 0;
+    let stop3DEntryPresetRetry = null;
+
+    const syncSize = () => {
+      if (cancelled || !hostRef.current) return;
+      syncAppletSizeToHost(hostRef.current, applet, appletApi);
+    };
+    const onWindowResize = () => {
+      syncSize();
+    };
 
     const init = async () => {
       try {
         await ensureGGBScript();
-        await Promise.all([ensurePlainScript(PARSER_SCRIPT_URL), ensurePlainScript(TIKZ_SCRIPT_URL)]);
+        await Promise.all([
+          ensurePlainScript(PARSER_SCRIPT_URL),
+          ensurePlainScript(TIKZ_SCRIPT_URL),
+          ensurePlainScript(PARSER_3D_SCRIPT_URL),
+          ensurePlainScript(TIKZ_3D_SCRIPT_URL)
+        ]);
         if (cancelled) return;
 
+        const initialSize = readHostSize(hostRef.current);
+
         const ggbParams = {
-          appName: 'geometry',
-          width: 1200,
-          height: 800,
+          appName: boardType === '3d' ? '3d' : 'geometry',
+          width: initialSize.width,
+          height: initialSize.height,
           showToolBar: true,
           showAlgebraInput: true,
           showMenuBar: true,
@@ -1297,17 +2314,46 @@ export default function NativeBoard({ onReadyChange }) {
           language: 'zh',
           appletOnLoad: (api) => {
             if (cancelled) return;
+            appletApi = api;
             setNativeApi(api);
-            applyAxesVisibility(api, readShowAxes());
+            if (boardType === '3d') {
+              if (typeof stop3DEntryPresetRetry === 'function') {
+                stop3DEntryPresetRetry();
+              }
+              stop3DEntryPresetRetry = apply3DEntryPresetWithRetry(api, initialSize.width, initialSize.height);
+              apply3DDisplayVisibility(api, { ...read3DDisplaySettings(), hardStopSpin: true });
+            } else {
+              applyAxesVisibility(api, readShowAxes());
+              try {
+                if (typeof api.setGridVisible === 'function') {
+                  api.setGridVisible(readShowGrid());
+                }
+              } catch {
+                // ignore API differences
+              }
+            }
+            syncSize();
             onReadyChange?.(api, true);
-            setBoardStatus('原生 GeoGebra 已就绪');
+            setBoardStatus(`原生 GeoGebra 已就绪（${boardType === '3d' ? '立体' : '平面'}）`);
           }
         };
 
-        const applet = new window.GGBApplet(ggbParams, true);
+        applet = new window.GGBApplet(ggbParams, true);
+        // 必须在 inject() 之前覆盖 codebase：deployggb 的 init() 会先设成 geogebra.org 的
+        // 默认地址，再用这里的覆盖值替换。第二个参数 true 表示离线模式。
+        if (typeof applet.setHTML5Codebase === 'function') {
+          applet.setHTML5Codebase(GGB_CODEBASE_URL, true);
+        }
         if (hostRef.current) {
           hostRef.current.innerHTML = '';
           applet.inject(hostRef.current);
+          syncSize();
+          rafId = window.requestAnimationFrame(syncSize);
+          if (typeof window.ResizeObserver === 'function') {
+            resizeObserver = new window.ResizeObserver(syncSize);
+            resizeObserver.observe(hostRef.current);
+          }
+          window.addEventListener('resize', onWindowResize);
         }
       } catch (e) {
         if (cancelled) return;
@@ -1321,12 +2367,86 @@ export default function NativeBoard({ onReadyChange }) {
 
     return () => {
       cancelled = true;
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      if (typeof stop3DEntryPresetRetry === 'function') {
+        stop3DEntryPresetRetry();
+      }
+      window.removeEventListener('resize', onWindowResize);
       setNativeApi(null);
       onReadyChange?.(null, false);
     };
-  }, [onReadyChange]);
+  }, [onReadyChange, boardType]);
 
   const buildTikzFromBoard = (optOverrides = {}) => {
+    if (boardType === '3d') {
+      if (!(nativeApi && typeof nativeApi.getXML === 'function' && window.GGB3DParser && window.TikZ3DGenerator)) {
+        throw new Error('3D 转译环境未就绪：缺少 3D 解析器或生成器');
+      }
+      const xml3d = nativeApi.getXML();
+      const parser3d = new window.GGB3DParser(xml3d);
+      const parsed3d = parser3d.parse();
+      const tikzCfg3d = readTikzSettings();
+      const tikz3dCfg = readTikz3DSettings();
+      const xmlProjection = read3DProjectionFromXml(xml3d);
+      const projectionPresetRaw = String(
+        optOverrides.projectionPreset
+        || tikz3dCfg.projectionPreset
+        || DEFAULT_TIKZ3D_PROJECTION_PRESET
+      ).trim().toLowerCase();
+      const projectionPreset = VALID_TIKZ3D_PROJECTION_PRESETS.includes(projectionPresetRaw)
+        ? projectionPresetRaw
+        : DEFAULT_TIKZ3D_PROJECTION_PRESET;
+      const autoRoundPrefer = typeof optOverrides.autoRoundPrefer === 'boolean'
+        ? optOverrides.autoRoundPrefer
+        : (tikz3dCfg.autoRoundPrefer !== false);
+      const effectiveProjectionPreset = (
+        projectionPreset === 'exam' && autoRoundPrefer && shouldPreferRoundProjection(parsed3d)
+      )
+        ? 'round'
+        : projectionPreset;
+      const baseAzimuthDeg = Number.isFinite(tikz3dCfg.azimuthDeg) ? tikz3dCfg.azimuthDeg : DEFAULT_TIKZ3D_AZIMUTH;
+      const baseDepthScale = Number.isFinite(tikz3dCfg.depthScale) ? tikz3dCfg.depthScale : DEFAULT_TIKZ3D_DEPTH;
+      const azimuthDeg = effectiveProjectionPreset === 'xml'
+        ? xmlProjection.azimuthDeg
+        : (
+          Number.isFinite(Number(optOverrides.azimuthDeg))
+            ? Number(optOverrides.azimuthDeg)
+            : baseAzimuthDeg
+        );
+      const depthScale = effectiveProjectionPreset === 'xml'
+        ? xmlProjection.depthScale
+        : (
+          Number.isFinite(Number(optOverrides.depthScale))
+            ? Number(optOverrides.depthScale)
+            : baseDepthScale
+        );
+      const showPointLabels = typeof optOverrides.showPointLabels === 'boolean'
+        ? optOverrides.showPointLabels
+        : tikz3dCfg.showPointLabels;
+      const generator3d = new window.TikZ3DGenerator({
+        outputMode: 'figure',
+        projectionPreset: effectiveProjectionPreset === 'exam'
+          ? 'exam'
+          : (effectiveProjectionPreset === 'round' ? 'round' : 'azimuth'),
+        axis: tikzCfg3d.showAxis,
+        axisThickness: tikzCfg3d.axisThickness,
+        lineStrokeThickness: tikzCfg3d.lineThickness,
+        segmentStrokeThickness: tikzCfg3d.segmentThickness,
+        polygonStrokeThickness: tikzCfg3d.polygonThickness,
+        pointRadiusPt: tikzCfg3d.pointRadiusPt,
+        fillPolygons: true,
+        lineExtension: tikzCfg3d.lineExtend,
+        azimuthDeg: Math.max(-180, Math.min(180, azimuthDeg)),
+        depthScale: Math.max(0, Math.min(2, depthScale)),
+        showPointLabels
+      });
+      return generator3d.generate(parsed3d);
+    }
     if (!(nativeApi && typeof nativeApi.getXML === 'function' && window.GGBParser && window.TikZGenerator)) {
       throw new Error('当前环境未就绪：缺少原生画板或解析器');
     }
@@ -1377,7 +2497,9 @@ export default function NativeBoard({ onReadyChange }) {
       clipPad: Number.isFinite(Number(optOverrides.clipPad))
         ? Number(optOverrides.clipPad)
         : optClipPad,
-      labelOverrides,
+      labelOverrides: (optOverrides.labelOverrides && typeof optOverrides.labelOverrides === 'object')
+        ? optOverrides.labelOverrides
+        : labelOverrides,
       labelOffsetPt: Number.isFinite(Number(optOverrides.labelOffsetPt))
         ? Number(optOverrides.labelOffsetPt)
         : optLabelOffsetPt,
@@ -1403,8 +2525,29 @@ export default function NativeBoard({ onReadyChange }) {
       setActionStatus('TikZ 调试区为空');
       return;
     }
-    setTikzPreviewContent(buildTikzPreviewContent(text));
+    if (tikzCompileDebounceRef.current) {
+      clearTimeout(tikzCompileDebounceRef.current);
+      tikzCompileDebounceRef.current = null;
+    }
+    setTikzPreviewContent(text);
     setTikzPreviewSize(estimateTikzSizeCm(text));
+    setTikzPreviewState({ phase: 'loading', message: '正在用本地 LaTeX 编译…', engine: 'latex' });
+    setTikzPreviewRevision((revision) => revision + 1);
+  };
+
+  const scheduleTikzPreview = (code) => {
+    const text = String(code || '').trim();
+    if (!text) return;
+    if (tikzCompileDebounceRef.current) clearTimeout(tikzCompileDebounceRef.current);
+    setTikzPreviewState((current) => ({
+      ...current,
+      phase: 'pending',
+      message: '已更新参数，停止微调后自动编译…'
+    }));
+    tikzCompileDebounceRef.current = setTimeout(() => {
+      tikzCompileDebounceRef.current = null;
+      compileTikzPreview(text);
+    }, 600);
   };
 
   const aiOptimizeTikzCode = () => {
@@ -1451,8 +2594,81 @@ export default function NativeBoard({ onReadyChange }) {
     }
     const nextCode = applyLabelOverridesToTikzCode(tikzDebugCode, { [label]: ov }, optLabelFontPt, optLabelMaxShiftPt);
     setTikzDebugCode(nextCode);
-    compileTikzPreview(nextCode);
+    scheduleTikzPreview(nextCode);
     if (!silent) setActionStatus(`已自动应用标签 ${label} 的微调`);
+  };
+
+  const syncStyleAdjustFromCode = (code, targetId) => {
+    const id = String(targetId || '').trim();
+    if (!id) return;
+    const item = extractAdjustableStyleItems(code).find((it) => it.id === id);
+    if (!item) return;
+    const opts = String(item.options || '');
+    if (item.kind === 'line') {
+      setStyleAdjustLineColor(getTikzKeyOptionValue(opts, 'draw') || '');
+      setStyleAdjustLineDash(parseDashOptionFromTikzOptions(opts));
+      return;
+    }
+    setStyleAdjustFaceColor(getTikzKeyOptionValue(opts, 'fill') || '');
+    const opRaw = getTikzKeyOptionValue(opts, 'fill opacity') || getTikzKeyOptionValue(opts, 'opacity');
+    const opNum = Number(opRaw);
+    setStyleAdjustFaceOpacity(Number.isFinite(opNum) ? String(opNum) : '');
+  };
+
+  const applyStyleAdjustToCode = ({ silent = false } = {}) => {
+    const id = String(styleAdjustTarget || '').trim();
+    if (!id) {
+      if (!silent) setActionStatus('请先选择要微调的线或面');
+      return;
+    }
+    const kind = id.startsWith('line:') ? 'line' : (id.startsWith('face:') ? 'face' : '');
+    if (!kind) {
+      if (!silent) setActionStatus('当前目标不可微调');
+      return;
+    }
+    const patch = kind === 'line'
+      ? {
+          lineColor: String(styleAdjustLineColor || '').trim(),
+          lineDash: normalizeLineDashOption(styleAdjustLineDash || '')
+        }
+      : {
+          faceColor: String(styleAdjustFaceColor || '').trim(),
+          faceOpacity: String(styleAdjustFaceOpacity || '').trim()
+        };
+    const nextCode = applyStyleAdjustToTikzCode(tikzDebugCode, id, patch);
+    if (nextCode === tikzDebugCode) return;
+    setTikzDebugCode(nextCode);
+    scheduleTikzPreview(nextCode);
+    if (!silent) {
+      setActionStatus(kind === 'line' ? '已应用当前线的微调' : '已应用当前面的微调');
+    }
+  };
+
+  const resetCurrentStyleAdjust = () => {
+    const id = String(styleAdjustTarget || '').trim();
+    if (!id) {
+      setActionStatus('请先选择要重置的线或面');
+      return;
+    }
+    const kind = id.startsWith('line:') ? 'line' : (id.startsWith('face:') ? 'face' : '');
+    const nextCode = applyStyleAdjustToTikzCode(tikzDebugCode, id, kind === 'line'
+      ? { lineColor: '', lineDash: '' }
+      : { faceColor: '', faceOpacity: '' });
+    if (nextCode === tikzDebugCode) {
+      setActionStatus('当前对象无可重置的微调项');
+      return;
+    }
+    setTikzDebugCode(nextCode);
+    scheduleTikzPreview(nextCode);
+    if (kind === 'line') {
+      setStyleAdjustLineColor('');
+      setStyleAdjustLineDash('');
+      setActionStatus('已重置当前线的微调');
+    } else {
+      setStyleAdjustFaceColor('');
+      setStyleAdjustFaceOpacity('');
+      setActionStatus('已重置当前面的微调');
+    }
   };
 
   const nudgeLabelAdjust = (dx, dy) => {
@@ -1517,7 +2733,7 @@ export default function NativeBoard({ onReadyChange }) {
       [label]: { position: 'above right', xshift: 0, yshift: 0 }
     }, optLabelFontPt, optLabelMaxShiftPt);
     setTikzDebugCode(nextCode);
-    compileTikzPreview(nextCode);
+    scheduleTikzPreview(nextCode);
     setActionStatus(`已重置标签 ${label} 的微调`);
   };
 
@@ -1543,6 +2759,11 @@ export default function NativeBoard({ onReadyChange }) {
     setOptDraftLineThickness(tikzLineThicknessCfg);
     setOptDraftSegmentThickness(tikzSegmentThicknessCfg);
     setOptDraftPolygonThickness(tikzPolygonThicknessCfg);
+    setOptDraft3dAzimuth(tikz3dAzimuthCfg);
+    setOptDraft3dDepth(tikz3dDepthCfg);
+    setOptDraft3dProjectionPreset(tikz3dProjectionPresetCfg);
+    setOptDraft3dPointLabels(tikz3dShowPointLabelsCfg);
+    setOptDraft3dAutoRoundPrefer(tikz3dAutoRoundPreferCfg);
     setTikzPrefsOpen(true);
   };
 
@@ -1589,6 +2810,23 @@ export default function NativeBoard({ onReadyChange }) {
     const polygonThickness = ALLOWED_TIKZ_THICKNESS.has(String(optDraftPolygonThickness || '').trim())
       ? String(optDraftPolygonThickness).trim()
       : 'thick';
+    const projectionPreset = VALID_TIKZ3D_PROJECTION_PRESETS.includes(String(optDraft3dProjectionPreset || '').trim().toLowerCase())
+      ? String(optDraft3dProjectionPreset).trim().toLowerCase()
+      : DEFAULT_TIKZ3D_PROJECTION_PRESET;
+    const azimuthDeg = Math.max(-180, Math.min(180, Number(optDraft3dAzimuth) || DEFAULT_TIKZ3D_AZIMUTH));
+    const depthScale = Math.max(0, Math.min(2, Number(optDraft3dDepth) || DEFAULT_TIKZ3D_DEPTH));
+    const showPointLabels3d = !!optDraft3dPointLabels;
+    const autoRoundPrefer3d = !!optDraft3dAutoRoundPrefer;
+    const regenRequired = (
+      lineExtend !== tikzLineExtendCfg
+      || pointRadiusPt !== tikzPointRadiusCfg
+      || polygonFillColor !== tikzPolygonFillCfg
+      || conicThickness !== tikzConicThicknessCfg
+      || functionThickness !== tikzFunctionThicknessCfg
+      || lineThickness !== tikzLineThicknessCfg
+      || segmentThickness !== tikzSegmentThicknessCfg
+      || polygonThickness !== tikzPolygonThicknessCfg
+    );
     setOptTargetWcm(targetW);
     setOptTargetHcm(targetH);
     setOptScalePriority(priority);
@@ -1610,6 +2848,11 @@ export default function NativeBoard({ onReadyChange }) {
     setTikzLineThicknessCfg(lineThickness);
     setTikzSegmentThicknessCfg(segmentThickness);
     setTikzPolygonThicknessCfg(polygonThickness);
+    setTikz3dAzimuthCfg(azimuthDeg);
+    setTikz3dDepthCfg(depthScale);
+    setTikz3dProjectionPresetCfg(projectionPreset);
+    setTikz3dShowPointLabelsCfg(showPointLabels3d);
+    setTikz3dAutoRoundPreferCfg(autoRoundPrefer3d);
     localStorage.setItem(STORAGE_TIKZ_OPT_TARGET_W_CM, String(targetW));
     localStorage.setItem(STORAGE_TIKZ_OPT_TARGET_H_CM, String(targetH));
     localStorage.setItem(STORAGE_TIKZ_OPT_PRIORITY, priority);
@@ -1632,10 +2875,20 @@ export default function NativeBoard({ onReadyChange }) {
     localStorage.setItem(STORAGE_TIKZ_LINE_THICKNESS, lineThickness);
     localStorage.setItem(STORAGE_TIKZ_SEGMENT_THICKNESS, segmentThickness);
     localStorage.setItem(STORAGE_TIKZ_POLYGON_THICKNESS, polygonThickness);
+    localStorage.setItem(STORAGE_TIKZ3D_AZIMUTH, String(azimuthDeg));
+    localStorage.setItem(STORAGE_TIKZ3D_DEPTH, String(depthScale));
+    localStorage.setItem(STORAGE_TIKZ3D_PROJECTION_PRESET, projectionPreset);
+    localStorage.setItem(STORAGE_TIKZ3D_SHOW_POINT_LABELS, showPointLabels3d ? 'on' : 'off');
+    localStorage.setItem(STORAGE_TIKZ3D_AUTO_ROUND_PREFER, autoRoundPrefer3d ? 'on' : 'off');
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent(TIKZ_SETTINGS_UPDATED_EVENT, { detail: { source: 'native-board' } }));
+    }
     if (tikzDebugOpen) {
       try {
         let refreshed = '';
         const currentCode = String(tikzDebugCode || '').trim();
+        const labelFromCode = currentCode ? extractAdjustableLabelOptionsMap(currentCode) : {};
+        const mergedLabelOverrides = { ...(labelOverrides || {}), ...labelFromCode };
         const optPayload = {
           targetWidthCm: targetW,
           targetHeightCm: targetH,
@@ -1648,29 +2901,32 @@ export default function NativeBoard({ onReadyChange }) {
           labelFontPt,
           labelMaxShiftPt,
           showAxis,
-          axisThickness
+          axisThickness,
+          pointRadiusPt,
+          projectionPreset,
+          azimuthDeg,
+          depthScale,
+          showPointLabels: showPointLabels3d,
+          labelOverrides: mergedLabelOverrides
         };
-        // 优先对“当前调试器代码”应用偏好，避免覆盖用户手工微调与补充内容。
-        if (currentCode) {
-          const labelFromCode = extractAdjustableLabelOptionsMap(currentCode);
-          refreshed = optimizeTikzCodeRules(currentCode, {
-            ...optPayload,
-            labelOverrides: { ...(labelOverrides || {}), ...labelFromCode }
-          });
-        } else if (nativeApi && typeof nativeApi.getXML === 'function' && window.GGBParser && window.TikZGenerator) {
+        // 这些参数依赖“重新转译”才会生效（线宽/填充/延伸等）。
+        if (
+          (regenRequired || boardType === '3d')
+          && nativeApi
+          && typeof nativeApi.getXML === 'function'
+        ) {
           refreshed = buildTikzFromBoard(optPayload);
-        } else {
-          const legacy = getLegacyWindow();
-          if (legacy && typeof legacy.buildTikZFromBoard === 'function') {
-            refreshed = String(legacy.buildTikZFromBoard() || '');
-          }
+        } else if (currentCode && boardType !== '3d') {
+          refreshed = optimizeTikzCodeRules(currentCode, optPayload);
+        } else if (nativeApi && typeof nativeApi.getXML === 'function') {
+          refreshed = buildTikzFromBoard(optPayload);
         }
         if (String(refreshed || '').trim()) {
           setTikzDebugCode(refreshed);
           compileTikzPreview(refreshed);
-          setActionStatus('转译偏好已应用到当前调试代码');
+          setActionStatus(regenRequired ? '转译偏好已应用并重生成代码' : '转译偏好已应用到当前调试代码');
         } else {
-          setActionStatus('转译偏好已应用');
+          setActionStatus(regenRequired ? '转译偏好已应用（当前无法重生成）' : '转译偏好已应用');
         }
       } catch (e) {
         setActionStatus(`转译偏好已应用，但刷新失败：${e.message}`);
@@ -1684,16 +2940,11 @@ export default function NativeBoard({ onReadyChange }) {
   const openTikzDebugger = () => {
     try {
       let code = '';
-      if (nativeApi && typeof nativeApi.getXML === 'function' && window.GGBParser && window.TikZGenerator) {
+      if (nativeApi && typeof nativeApi.getXML === 'function') {
         code = buildTikzFromBoard();
-      } else {
-        const legacy = getLegacyWindow();
-        if (legacy && typeof legacy.buildTikZFromBoard === 'function') {
-          code = String(legacy.buildTikZFromBoard() || '');
-        }
       }
       if (!String(code || '').trim()) {
-        setActionStatus('未获取到可调试的 TikZ 代码');
+        setActionStatus('未获取到可调试的 TikZ 代码（请确认原生画板已就绪）');
         return;
       }
       setTikzDebugCode(code);
@@ -1753,6 +3004,9 @@ export default function NativeBoard({ onReadyChange }) {
   }, [tikzDebugOpen, tikzWindowPos.x, tikzWindowPos.y]);
 
   const debugPointLabels = extractAdjustableLabelsFromTikz(tikzDebugCode);
+  const debugStyleItems = extractAdjustableStyleItems(tikzDebugCode);
+  const styleAdjustTargetItem = debugStyleItems.find((it) => it.id === styleAdjustTarget) || null;
+  const styleAdjustKind = styleAdjustTargetItem ? styleAdjustTargetItem.kind : '';
 
   useEffect(() => {
     if (!tikzDebugOpen) return;
@@ -1773,6 +3027,26 @@ export default function NativeBoard({ onReadyChange }) {
     if (!label) return;
     syncLabelAdjustFromCode(tikzDebugCode, label);
   }, [tikzDebugOpen, labelAdjustTarget, optLabelMaxShiftPt]);
+
+  useEffect(() => {
+    if (!tikzDebugOpen) return;
+    if (debugStyleItems.length === 0) {
+      if (styleAdjustTarget) setStyleAdjustTarget('');
+      return;
+    }
+    if (!debugStyleItems.some((it) => it.id === styleAdjustTarget)) {
+      const next = debugStyleItems[0].id;
+      setStyleAdjustTarget(next);
+      syncStyleAdjustFromCode(tikzDebugCode, next);
+    }
+  }, [tikzDebugOpen, tikzDebugCode, styleAdjustTarget, debugStyleItems]);
+
+  useEffect(() => {
+    if (!tikzDebugOpen) return;
+    const id = String(styleAdjustTarget || '').trim();
+    if (!id) return;
+    syncStyleAdjustFromCode(tikzDebugCode, id);
+  }, [tikzDebugOpen, styleAdjustTarget, tikzDebugCode]);
 
   useEffect(() => {
     if (!tikzDebugOpen) return;
@@ -1798,6 +3072,30 @@ export default function NativeBoard({ onReadyChange }) {
   }, [tikzDebugOpen, labelAdjustTarget, labelAdjustPos, labelAdjustX, labelAdjustY, optLabelMaxShiftPt]);
 
   useEffect(() => {
+    if (!tikzDebugOpen) return;
+    if (!String(styleAdjustTarget || '').trim()) return;
+    if (styleAdjustAutoTimerRef.current) {
+      clearTimeout(styleAdjustAutoTimerRef.current);
+    }
+    styleAdjustAutoTimerRef.current = setTimeout(() => {
+      applyStyleAdjustToCode({ silent: true });
+    }, 160);
+    return () => {
+      if (styleAdjustAutoTimerRef.current) {
+        clearTimeout(styleAdjustAutoTimerRef.current);
+        styleAdjustAutoTimerRef.current = null;
+      }
+    };
+  }, [
+    tikzDebugOpen,
+    styleAdjustTarget,
+    styleAdjustLineColor,
+    styleAdjustLineDash,
+    styleAdjustFaceColor,
+    styleAdjustFaceOpacity
+  ]);
+
+  useEffect(() => {
     if (!tikzDebugOpen) return undefined;
     const stop = () => stopContinuousNudge();
     window.addEventListener('pointerup', stop);
@@ -1806,29 +3104,81 @@ export default function NativeBoard({ onReadyChange }) {
       window.removeEventListener('pointerup', stop);
       window.removeEventListener('pointercancel', stop);
       stopContinuousNudge();
+      if (tikzCompileDebounceRef.current) {
+        clearTimeout(tikzCompileDebounceRef.current);
+        tikzCompileDebounceRef.current = null;
+      }
     };
   }, [tikzDebugOpen]);
 
+  const copyCompiledVector = async () => {
+    if (!tikzCompiledPdf) {
+      setActionStatus('尚无可导出的矢量预览，请先编译');
+      return;
+    }
+    try {
+      const blob = await fetch(tikzCompiledPdf).then((response) => response.blob());
+      if (navigator.clipboard?.write && typeof ClipboardItem !== 'undefined') {
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ 'application/pdf': blob })]);
+          setActionStatus('已将矢量 PDF 复制到剪切板');
+          return;
+        } catch {
+          // Chromium 通常不允许 PDF MIME，继续使用 macOS 后端剪切板。
+        }
+      }
+      const response = await fetch(withBase('api/tikz/copy-pdf'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdf: tikzCompiledPdf })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || '剪切板写入失败');
+      setActionStatus('已将矢量 PDF 复制到系统剪切板');
+    } catch (error) {
+      setActionStatus(`矢量图复制失败：${error.message}`);
+    }
+  };
+
+  const saveCompiledVector = async () => {
+    if (!tikzCompiledPdf) {
+      setActionStatus('尚无可导出的矢量预览，请先编译');
+      return;
+    }
+    try {
+      const blob = await fetch(tikzCompiledPdf).then((response) => response.blob());
+      const suggestedName = `tikz-preview-${new Date().toISOString().replace(/[:.]/g, '-')}.pdf`;
+      if (typeof window.showSaveFilePicker === 'function') {
+        const handle = await window.showSaveFilePicker({
+          suggestedName,
+          types: [{ description: '矢量 PDF', accept: { 'application/pdf': ['.pdf'] } }]
+        });
+        const writable = await handle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+      } else {
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = suggestedName;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }
+      setActionStatus('已导出矢量 PDF 文件');
+    } catch (error) {
+      if (error.name !== 'AbortError') setActionStatus(`矢量图导出失败：${error.message}`);
+    }
+  };
+
   const exportTikz = async () => {
     try {
-      if (nativeApi && typeof nativeApi.getXML === 'function' && window.GGBParser && window.TikZGenerator) {
+      if (nativeApi && typeof nativeApi.getXML === 'function') {
         const code = buildTikzFromBoard();
         await navigator.clipboard.writeText(code);
         setActionStatus('已复制 TikZ 代码');
         return;
       }
-
-      const legacy = getLegacyWindow();
-      if (!legacy) {
-        setActionStatus('导出失败：未找到画板实例');
-        return;
-      }
-      if (typeof legacy.exportTikZToClipboard === 'function') {
-        await legacy.exportTikZToClipboard();
-        setActionStatus('已回退旧版导出 TikZ');
-        return;
-      }
-      setActionStatus('导出失败：旧版未暴露 TikZ 导出');
+      setActionStatus('导出失败：原生画板未就绪');
     } catch (e) {
       setActionStatus(`TikZ 导出失败：${e.message}`);
     }
@@ -1858,18 +3208,7 @@ export default function NativeBoard({ onReadyChange }) {
         setActionStatus('已下载图片文件');
         return;
       }
-
-      const legacy = getLegacyWindow();
-      if (!legacy) {
-        setActionStatus('导出失败：未找到画板实例');
-        return;
-      }
-      if (typeof legacy.exportImage === 'function') {
-        await legacy.exportImage();
-        setActionStatus('已回退旧版导出图片');
-        return;
-      }
-      setActionStatus('导出失败：旧版未暴露图片导出');
+      setActionStatus('导出失败：原生画板未就绪');
     } catch (e) {
       setActionStatus(`图片导出失败：${e.message}`);
     }
@@ -1882,9 +3221,10 @@ export default function NativeBoard({ onReadyChange }) {
         return;
       }
 
-      if (typeof nativeApi.getXML === 'function' && window.GGBParser) {
+      const parserCtor = boardType === '3d' ? window.GGB3DParser : window.GGBParser;
+      if (typeof nativeApi.getXML === 'function' && typeof parserCtor === 'function') {
         const xml = nativeApi.getXML() || '';
-        const parser = new window.GGBParser(xml);
+        const parser = new parserCtor(xml);
         const parsed = parser.parse();
         const structured = parsed?.structured || buildFallbackStructured(nativeApi);
         setElementsRawXml(xml);
@@ -1903,13 +3243,6 @@ export default function NativeBoard({ onReadyChange }) {
         return;
       }
 
-      const legacy = getLegacyWindow();
-      if (legacy && typeof legacy.showBoardElements === 'function') {
-        legacy.showBoardElements();
-        setActionStatus('已回退旧版元素查看器');
-        return;
-      }
-
       setActionStatus('元素查看不可用');
     } catch (e) {
       setActionStatus(`元素查看失败：${e.message}`);
@@ -1918,22 +3251,28 @@ export default function NativeBoard({ onReadyChange }) {
 
   const clearBoard = () => {
     try {
-      if (nativeApi && typeof nativeApi.reset === 'function') {
-        nativeApi.reset();
-        setActionStatus('已清空画板');
+      if (!nativeApi) {
+        setActionStatus('清空失败：原生画板未就绪');
         return;
       }
-      const legacy = getLegacyWindow();
-      if (!legacy) {
-        setActionStatus('清空失败：未找到画板实例');
+      const result = clearBoardObjects(nativeApi);
+      if (!result.ok) {
+        setActionStatus('清空失败：当前对象不可删除');
         return;
       }
-      if (typeof legacy.clearBoard === 'function') {
-        legacy.clearBoard(false);
-        setActionStatus('已回退旧版清空画板');
-        return;
+      if (boardType === '3d') {
+        apply3DDisplayVisibility(nativeApi, { ...read3DDisplaySettings(), hardStopSpin: true });
+      } else {
+        applyAxesVisibility(nativeApi, readShowAxes());
+        try {
+          if (typeof nativeApi.setGridVisible === 'function') {
+            nativeApi.setGridVisible(readShowGrid());
+          }
+        } catch {
+          // ignore API differences
+        }
       }
-      setActionStatus('清空失败：旧版未暴露 clearBoard');
+      setActionStatus(result.deleted > 0 ? `已清空画板（删除 ${result.deleted} 个对象）` : '已清空画板');
     } catch (e) {
       setActionStatus(`清空失败：${e.message}`);
     }
@@ -2019,50 +3358,103 @@ export default function NativeBoard({ onReadyChange }) {
   useEffect(() => {
     const host = tikzPreviewHostRef.current;
     if (!host) return;
-    host.innerHTML = '';
 
     const content = String(tikzPreviewContent || '').trim();
     if (!content) return;
 
-    const tikzScript = document.createElement('script');
-    tikzScript.type = 'text/tikz';
-    tikzScript.text = content;
-    host.appendChild(tikzScript);
+    const controller = new AbortController();
     let cancelled = false;
-    ensureTikzJaxReady()
-      .then((render) => {
+    const renderPreview = async () => {
+      setTikzPreviewState({ phase: 'loading', message: '正在用本地 LaTeX 编译…', engine: 'latex' });
+      try {
+        const response = await fetch(withBase('api/tikz/compile'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: content }),
+          signal: controller.signal
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          const error = new Error(data.message || `本地编译服务返回 HTTP ${response.status}`);
+          error.canFallback = response.status === 503 || response.status === 404;
+          throw error;
+        }
         if (cancelled) return;
-        return render();
-      })
-      .catch((e) => {
-        if (!cancelled) setActionStatus(`TikZ 预览失败：${e.message}`);
-      });
+        host.innerHTML = '';
+        const image = document.createElement('img');
+        image.src = String(data.image || '');
+        image.alt = 'TikZ 编译预览';
+        host.appendChild(image);
+        if (!image.src.startsWith('data:image/')) throw new Error('本地编译未返回有效图像');
+        setTikzCompiledPdf(String(data.pdf || ''));
+        setTikzPreviewState({ phase: 'success', message: '编译成功', engine: '本地 LaTeX' });
+      } catch (error) {
+        if (cancelled || error.name === 'AbortError') return;
+        const networkFailure = error instanceof TypeError;
+        if (!networkFailure && !error.canFallback) {
+          host.innerHTML = '';
+          setTikzPreviewState({ phase: 'error', message: error.message, engine: '本地 LaTeX' });
+          return;
+        }
+
+        setTikzPreviewState({ phase: 'loading', message: '本地 LaTeX 不可用，正在回退到浏览器渲染…', engine: 'TikZJax' });
+        try {
+          await renderTikzJaxFallback(host, content);
+          if (!cancelled) setTikzPreviewState({ phase: 'success', message: '编译成功（回退模式）', engine: 'TikZJax' });
+        } catch (fallbackError) {
+          if (!cancelled) {
+            host.innerHTML = '';
+            setTikzPreviewState({
+              phase: 'error',
+              message: `本地 LaTeX：${error.message}；TikZJax：${fallbackError.message}`,
+              engine: ''
+            });
+          }
+        }
+      }
+    };
+    renderPreview();
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [tikzPreviewContent]);
+  }, [tikzPreviewContent, tikzPreviewRevision]);
 
   return (
     <section className="panel panel-right">
-      {toastVisible ? <div className="top-toast">❗ {toastText}</div> : null}
+      {toastItems.length ? (
+        <div className="top-toast-stack">
+          {toastItems.map((item) => (
+            <div key={item.id} className="top-toast">❗ {item.text}</div>
+          ))}
+        </div>
+      ) : null}
       <header className="panel-subheader">
         <h2>原生 GeoGebra 画板（React）</h2>
         <div className="board-head-actions">
+          <div className="board-type-switch">
+            <button
+              className={`btn btn-lite board-btn board-type-btn ${boardType === '2d' ? 'is-active' : ''}`}
+              onClick={() => onBoardTypeChange?.('2d')}
+            >
+              2D 画板
+            </button>
+            <button
+              className={`btn btn-lite board-btn board-type-btn ${boardType === '3d' ? 'is-active' : ''}`}
+              onClick={() => onBoardTypeChange?.('3d')}
+            >
+              3D 画板
+            </button>
+          </div>
           <button className="btn btn-lite board-btn" onClick={clearBoard}>清空画板</button>
           <button className="btn btn-lite board-btn" onClick={showBoardElements}>画板元素</button>
           <button className="btn btn-lite board-btn" onClick={exportImage}>导出图片</button>
           <button className="btn btn-lite board-btn" onClick={openTikzDebugger}>TikZ 调试</button>
           <button className="btn board-btn" onClick={exportTikz}>导出 TikZ</button>
-          <a className="link" href={LEGACY_PAGE_URL} target="_blank" rel="noreferrer">旧版备用</a>
         </div>
       </header>
       <div className="board-status">{actionStatus || boardStatus}</div>
       <div className="native-board-host" ref={hostRef} />
-      <iframe
-        className="legacy-frame legacy-frame-hidden"
-        src={LEGACY_PAGE_URL}
-        title="Legacy GeoGebra Fallback"
-      />
 
       {elementsOpen ? (
         <div className="settings-modal-overlay" onClick={() => setElementsOpen(false)}>
@@ -2164,6 +3556,14 @@ export default function NativeBoard({ onReadyChange }) {
                 </div>
               </div>
               <div className="actions-row gap">
+                <details className="tikz-vector-export" onPointerDown={(event) => event.stopPropagation()}>
+                  <summary className="btn btn-lite">导出矢量图</summary>
+                  <div className="tikz-vector-export-menu">
+                    <button className="btn btn-lite" onClick={copyCompiledVector}>复制到剪切板</button>
+                    <button className="btn btn-lite" onClick={saveCompiledVector}>保存 PDF 文件</button>
+                    <small>PDF 为纯矢量，放大不失真</small>
+                  </div>
+                </details>
                 <button
                   className="btn btn-lite"
                   onClick={() => {
@@ -2210,10 +3610,15 @@ export default function NativeBoard({ onReadyChange }) {
                     : '图形估算尺寸：暂不可计算（代码中缺少足够的数值坐标）'}
                 </div>
                 <div className="tikz-debug-preview-wrap">
-                  <div className="tikz-debug-preview-canvas" ref={tikzPreviewHostRef} />
+                  <div className="tikz-debug-preview-canvas">
+                    {tikzPreviewState.phase === 'loading' ? <div className="tikz-preview-loading" aria-live="polite" /> : null}
+                    <div ref={tikzPreviewHostRef} />
+                  </div>
                 </div>
-                <div className="tikz-preview-hint">
-                  若预览为空，通常是 TikZ 代码超出 TikZJax 支持范围，可直接复制到本地 LaTeX 编译。
+                <div className={`tikz-preview-status is-${tikzPreviewState.phase}`} aria-live="polite">
+                  <span>{tikzPreviewState.phase === 'success' ? '✓' : tikzPreviewState.phase === 'error' ? '编译失败' : '编译状态'}</span>
+                  <span>{tikzPreviewState.message}</span>
+                  {tikzPreviewState.engine ? <small>{tikzPreviewState.engine}</small> : null}
                 </div>
                 <div className="settings-section" style={{ marginTop: 10 }}>
                   <h4>标签微调（半自动）</h4>
@@ -2303,6 +3708,86 @@ export default function NativeBoard({ onReadyChange }) {
                   <div className="tikz-label-tune-tip">提示：方向键支持长按连续移动；负数表示反向移动。</div>
                   <div className="actions-row gap" style={{ marginTop: 8 }}>
                     <button className="btn btn-lite" onClick={resetCurrentLabelAdjust}>重置当前点</button>
+                  </div>
+                </div>
+                <div className="settings-section" style={{ marginTop: 10 }}>
+                  <h4>线/面微调（半自动）</h4>
+                  <div className="tikz-label-tune-grid">
+                    <label className="tikz-label-tune-field">
+                      <span>目标对象</span>
+                      <select
+                        className="tikz-label-tune-select"
+                        value={styleAdjustTarget}
+                        onChange={(e) => {
+                          const id = String(e.target.value || '');
+                          setStyleAdjustTarget(id);
+                          syncStyleAdjustFromCode(tikzDebugCode, id);
+                        }}
+                      >
+                        {debugStyleItems.length === 0 ? <option value="">当前无可调线/面</option> : null}
+                        {debugStyleItems.map((item) => (
+                          <option key={item.id} value={item.id}>{item.label}</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {styleAdjustKind === 'line' ? (
+                    <div className="tikz-label-tune-grid">
+                      <label className="tikz-label-tune-field">
+                        <span>线颜色</span>
+                        <input
+                          className="tikz-label-tune-input"
+                          value={styleAdjustLineColor}
+                          onChange={(e) => setStyleAdjustLineColor(e.target.value)}
+                          placeholder="例如 black / blue!70"
+                        />
+                      </label>
+                      <label className="tikz-label-tune-field">
+                        <span>线型</span>
+                        <select
+                          className="tikz-label-tune-select"
+                          value={styleAdjustLineDash}
+                          onChange={(e) => setStyleAdjustLineDash(normalizeLineDashOption(e.target.value))}
+                        >
+                          <option value="">默认（保持原样）</option>
+                          <option value="solid">solid（实线）</option>
+                          <option value="dashed">dashed（虚线）</option>
+                          <option value="dotted">dotted（点线）</option>
+                          <option value="dash dot">dash dot（点划线）</option>
+                          <option value="dash dot dot">dash dot dot（双点划线）</option>
+                        </select>
+                      </label>
+                    </div>
+                  ) : null}
+                  {styleAdjustKind === 'face' ? (
+                    <div className="tikz-label-tune-grid">
+                      <label className="tikz-label-tune-field">
+                        <span>面颜色</span>
+                        <input
+                          className="tikz-label-tune-input"
+                          value={styleAdjustFaceColor}
+                          onChange={(e) => setStyleAdjustFaceColor(e.target.value)}
+                          placeholder="例如 blue!55 / red / none"
+                        />
+                      </label>
+                      <label className="tikz-label-tune-field">
+                        <span>透明度（0-1）</span>
+                        <input
+                          className="tikz-label-tune-input"
+                          type="number"
+                          min="0"
+                          max="1"
+                          step="0.05"
+                          value={styleAdjustFaceOpacity}
+                          onChange={(e) => setStyleAdjustFaceOpacity(e.target.value)}
+                          placeholder="留空=保持原样"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                  <div className="actions-row gap" style={{ marginTop: 8 }}>
+                    <button className="btn btn-lite" onClick={() => applyStyleAdjustToCode({ silent: false })}>立即应用</button>
+                    <button className="btn btn-lite" onClick={resetCurrentStyleAdjust}>重置当前对象</button>
                   </div>
                 </div>
               </div>
@@ -2448,6 +3933,71 @@ export default function NativeBoard({ onReadyChange }) {
                     </label>
                   </div>
                 </div>
+                {boardType === '3d' ? (
+                  <div className="settings-section">
+                    <h4>3D 转译偏好</h4>
+                    <div className="settings-grid">
+                      <label>
+                        投影预设
+                        <select
+                          value={optDraft3dProjectionPreset}
+                          onChange={(e) => setOptDraft3dProjectionPreset(String(e.target.value || DEFAULT_TIKZ3D_PROJECTION_PRESET))}
+                        >
+                          <option value="exam">题图预设（推荐）</option>
+                          <option value="round">圆类视角（圆柱/圆锥）</option>
+                          <option value="xml">跟随 XML 视角</option>
+                          <option value="custom">手动方位角/景深</option>
+                        </select>
+                      </label>
+                      {optDraft3dProjectionPreset === 'custom' ? (
+                        <label>
+                        观察方位角（°）
+                        <input
+                          type="number"
+                          min="-180"
+                          max="180"
+                          step="1"
+                          value={optDraft3dAzimuth}
+                          onChange={(e) => setOptDraft3dAzimuth(e.target.value)}
+                        />
+                      </label>
+                      ) : null}
+                      {optDraft3dProjectionPreset === 'custom' ? (
+                        <label>
+                        景深系数（0-2）
+                        <input
+                          type="number"
+                          min="0"
+                          max="2"
+                          step="0.05"
+                          value={optDraft3dDepth}
+                          onChange={(e) => setOptDraft3dDepth(e.target.value)}
+                        />
+                        </label>
+                      ) : null}
+                      <label>
+                        点标签
+                        <select
+                          value={optDraft3dPointLabels ? 'on' : 'off'}
+                          onChange={(e) => setOptDraft3dPointLabels(e.target.value === 'on')}
+                        >
+                          <option value="on">显示</option>
+                          <option value="off">隐藏</option>
+                        </select>
+                      </label>
+                      <label>
+                        圆类自动视角
+                        <select
+                          value={optDraft3dAutoRoundPrefer ? 'on' : 'off'}
+                          onChange={(e) => setOptDraft3dAutoRoundPrefer(e.target.value === 'on')}
+                        >
+                          <option value="on">开启（exam 自动切 round）</option>
+                          <option value="off">关闭（完全按手动预设）</option>
+                        </select>
+                      </label>
+                    </div>
+                  </div>
+                ) : null}
                 <div className="settings-section">
                   <h4>TikZ 导出样式</h4>
                   <div className="settings-grid">
@@ -2483,14 +4033,16 @@ export default function NativeBoard({ onReadyChange }) {
                         onChange={(e) => setOptDraftPointRadius(e.target.value)}
                       />
                     </label>
-                    <label>
-                      多边形填充颜色
-                      <input
-                        value={optDraftPolygonFill}
-                        onChange={(e) => setOptDraftPolygonFill(e.target.value)}
-                        placeholder="例如 black / blue!20 / none"
-                      />
-                    </label>
+                    {boardType !== '3d' ? (
+                      <label>
+                        多边形填充颜色
+                        <input
+                          value={optDraftPolygonFill}
+                          onChange={(e) => setOptDraftPolygonFill(e.target.value)}
+                          placeholder="例如 black / blue!20 / none"
+                        />
+                      </label>
+                    ) : null}
                     <label>
                       坐标轴线宽
                       <select
